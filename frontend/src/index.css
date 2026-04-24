@@ -1,115 +1,197 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=MedievalSharp&family=IM+Fell+English:ital@0;1&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-    margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+@layer base {
+  :root {
+    --background: 18 10% 4%;
+    --foreground: 34 32% 82%;
+    --card: 20 13% 7%;
+    --card-foreground: 34 32% 82%;
+    --popover: 20 13% 7%;
+    --popover-foreground: 34 32% 82%;
+    --primary: 4 74% 32%;
+    --primary-foreground: 34 40% 90%;
+    --secondary: 180 74% 31%;
+    --secondary-foreground: 34 40% 90%;
+    --muted: 22 17% 14%;
+    --muted-foreground: 31 18% 60%;
+    --accent: 180 74% 31%;
+    --accent-foreground: 34 40% 90%;
+    --destructive: 4 74% 32%;
+    --destructive-foreground: 34 40% 90%;
+    --border: 24 25% 15%;
+    --input: 24 25% 15%;
+    --ring: 4 74% 40%;
+    --radius: 0.25rem;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-dungeon-ink text-dungeon-parchment;
+    font-family: '"IM Fell English"', serif;
+    background-image:
+      radial-gradient(1000px 600px at 15% 0%, rgba(140, 28, 19, 0.08), transparent 60%),
+      radial-gradient(900px 500px at 90% 100%, rgba(19, 140, 140, 0.06), transparent 60%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 3px);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+  ::selection { background: #8c1c13; color: #e0d3c1; }
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+.font-heading { font-family: 'Cinzel', serif; letter-spacing: 0.08em; }
+.font-sub { font-family: 'MedievalSharp', cursive; }
+.font-body { font-family: '"IM Fell English"', serif; }
+
+/* Torchlight title */
+.torch-title {
+  font-family: 'Cinzel', serif;
+  color: #e0d3c1;
+  text-shadow:
+    0 0 2px #f0d89a,
+    0 0 10px rgba(240, 170, 60, 0.45),
+    0 0 28px rgba(180, 70, 30, 0.35),
+    0 2px 0 #000;
 }
 
-@layer base {
-    :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
-        --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
-    }
-    .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
-    }
+/* Pixel rendering for canvas */
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
 }
 
-@layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
+/* Grain overlay for surfaces */
+.grain::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/></svg>");
+  mix-blend-mode: overlay; opacity: 0.35;
 }
 
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
+/* Dungeon card */
+.dungeon-card {
+  position: relative;
+  background: linear-gradient(180deg, #1a1614 0%, #120f0d 100%);
+  border: 1px solid #31261d;
+  box-shadow:
+    inset 0 0 0 1px rgba(224,211,193,0.04),
+    0 20px 40px -20px rgba(0,0,0,0.9);
+}
 
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
-    }
+.parchment-card {
+  background:
+    radial-gradient(ellipse at center, #ecdcc2 0%, #d4bf9d 100%);
+  color: #2a221b;
+  border: 1px solid #6b4e2a;
+  box-shadow:
+    inset 0 0 40px rgba(120, 70, 20, 0.35),
+    inset 0 0 0 2px rgba(255, 248, 230, 0.1),
+    0 20px 40px -20px rgba(0,0,0,0.9);
+}
+
+/* Dungeon button */
+.btn-dungeon {
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 0.875rem;
+  padding: 0.85rem 1.5rem;
+  color: #e0d3c1;
+  background: linear-gradient(180deg, #1a1614 0%, #0e0b0a 100%);
+  border: 1px solid #8c1c13;
+  transition: all 220ms ease;
+  position: relative;
+  cursor: pointer;
+}
+.btn-dungeon:hover {
+  color: #f5e6c8;
+  border-color: #b0251a;
+  text-shadow: 0 0 8px rgba(176, 37, 26, 0.9);
+  box-shadow: 0 0 18px rgba(140,28,19,0.45), inset 0 0 12px rgba(140,28,19,0.25);
+}
+.btn-dungeon:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-teal {
+  border-color: #138c8c;
+}
+.btn-teal:hover {
+  border-color: #1fb3b3;
+  text-shadow: 0 0 8px rgba(31,179,179,0.9);
+  box-shadow: 0 0 18px rgba(19,140,140,0.45), inset 0 0 12px rgba(19,140,140,0.25);
+}
+
+.btn-ghost {
+  border-color: #31261d;
+}
+.btn-ghost:hover {
+  border-color: #8c7b68;
+  text-shadow: 0 0 6px rgba(224,211,193,0.7);
+}
+
+/* Rune corners for canvas frame */
+.rune-corner {
+  position: absolute;
+  width: 24px; height: 24px;
+  border: 2px solid #8c1c13;
+  opacity: 0.7;
+}
+
+/* Input */
+.dungeon-input {
+  background: #0d0b0a;
+  border: 1px solid #31261d;
+  color: #e0d3c1;
+  padding: 0.7rem 0.9rem;
+  font-family: '"IM Fell English"', serif;
+  font-size: 1rem;
+  width: 100%;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.dungeon-input:focus {
+  border-color: #8c1c13;
+  box-shadow: 0 0 0 2px rgba(140,28,19,0.15);
+}
+.dungeon-input::placeholder { color: #8c7b68; }
+
+/* Progress bar */
+.hud-bar {
+  position: relative;
+  height: 14px;
+  background: #0a0807;
+  border: 1px solid #31261d;
+  overflow: hidden;
+}
+.hud-bar > .fill {
+  height: 100%;
+  transition: width 200ms linear;
+}
+
+/* HUD slot */
+.hud-slot {
+  width: 42px; height: 42px;
+  background: #0d0b0a;
+  border: 1px solid #31261d;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Cinzel', serif; font-size: 0.75rem;
+  color: #8c7b68;
+}
+
+/* Scrollbar for logs */
+.log-scroll::-webkit-scrollbar { width: 6px; }
+.log-scroll::-webkit-scrollbar-track { background: #0d0b0a; }
+.log-scroll::-webkit-scrollbar-thumb { background: #31261d; }
+
+/* No animation on reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
 }

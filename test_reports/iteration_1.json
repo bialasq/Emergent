@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only testing for Dungeon of Echoes (FastAPI + MongoDB + JWT httpOnly cookie auth). Wrote /app/backend/tests/backend_test.py with 24 pytest cases covering root, register (success + duplicate email/username + invalid email + short password), login (success + wrong password + 5-failure lockout returning 429), /auth/me (auth + unauth), /auth/refresh, /auth/logout, runs submission (guest default username, guest with guest_id, authenticated run linked to user), /runs/me (auth required), leaderboard (sort by score/depth desc + rank numbering, warrior/mage filters, limit respected + capped at 100), run payload validation (invalid outcome, invalid character_class), case-insensitive username uniqueness. All tests passed against the public ingress URL (https://perf-gaming-hub-1.preview.emergentagent.com). Verified no _id leak in any response shape. NOTE: The URL provided in the review request (206caf8d-...) did not match frontend/.env; used the actual value perf-gaming-hub-1 from /app/frontend/.env.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/login", "issue": "Brute-force lockout key is IP+email. On 6th attempt it always re-upserts locked_until = now+15min, so each additional wrong attempt keeps extending the window indefinitely instead of using a fixed 15 min window. Acceptable but consider only setting locked_until once count crosses threshold."},
+      {"endpoint": "POST /api/auth/login", "issue": "No unlock on successful login count-reset race: code uses delete_one on success which is fine, but while locked (429) the user is blocked even with correct password (does not attempt verify). This is by design for brute-force protection, flagging for awareness."},
+      {"endpoint": "POST /api/runs", "issue": "Guest username falls back to body.guest_id verbatim with no length/charset validation; a malicious client could submit a 10KB 'username'. Consider clamping to 32 chars like character_name."},
+      {"endpoint": "GET /api/leaderboard", "issue": "Returns empty array [] when DB has no runs — correct, but the LeaderboardEntry model requires many non-optional fields; older runs missing fields would 500. Not observed in practice."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py (340 lines) is well under the 700-line threshold — good.",
+    "bcrypt hashes correctly produced via bcrypt.hashpw + gensalt ($2b$ format). Verified via successful register+login round-trips.",
+    "httpOnly + Secure + SameSite=None cookies are set on register/login/refresh. CORS has allow_credentials=True and allow_origins from env (defaults to '*' which is INVALID for credentialed requests — browsers will reject). Current CORS_ORIGINS='*' in backend/.env should be switched to explicit origin list before production, otherwise httpOnly cookies won't be sent from the React app in some browsers. For this preview it works because same-origin via ingress.",
+    "Brute-force counter keyed by IP+email works; test confirms 429 on 6th failure. Consider resetting count when locked_until elapses instead of re-upserting locked_until on every subsequent attempt.",
+    "MongoDB _id consistently excluded via projection {'_id': 0} in all find queries. No ObjectId leaks observed.",
+    "Indexes created on startup: users.email (unique), users.username_lower (unique), users.id (unique), runs (score desc, depth desc), runs.user_id, login_attempts.identifier — good.",
+    "/auth/refresh only sets a new access_token cookie; it does NOT rotate the refresh token. That's acceptable but rotation is best practice.",
+    "Password field max_length=100 is fine; bcrypt truncates at 72 bytes silently — consider rejecting >72-byte passwords to avoid silent truncation surprise.",
+    "get_current_user accepts Authorization: Bearer fallback — good for non-cookie clients.",
+    "Run submission has no rate limiting; a guest could spam the leaderboard. Low priority but worth noting.",
+    "No explicit pytest-asyncio used; using sync requests against live server — fine for integration tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/__init__.py"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "n/a"},
+  "test_credentials": "No seed user; tests register fresh TEST_*@test.com users per run.",
+  "seed_data_creation": "Tests insert TEST_-prefixed users and several runs into test_database. Not cleaned up (no explicit cleanup endpoint) — fine for preview DB.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green (24/24). If future iterations change auth cookie flags or CORS, re-run backend_test.py. Note backend/.env has CORS_ORIGINS='*' which is incompatible with SameSite=None; Secure cookies when used cross-origin — tests work because tests hit same-origin via ingress. Recommend setting CORS_ORIGINS to the frontend URL explicitly before frontend integration testing.",
+  "rca of the issue": "No issues to RCA."
+}
