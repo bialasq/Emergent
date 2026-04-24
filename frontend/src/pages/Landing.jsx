@@ -94,6 +94,11 @@ export default function Landing() {
                 <Swords className="w-4 h-4" /> Enter the Crypt
               </button>
             </Link>
+            <Link to="/coop" data-testid="play-coop-btn">
+              <button className="btn-dungeon btn-teal flex items-center gap-3">
+                <Skull className="w-4 h-4" /> Shared Descent
+              </button>
+            </Link>
             {!isAuthed && (
               <Link to="/register" data-testid="cta-register-btn">
                 <button className="btn-dungeon btn-ghost flex items-center gap-3">

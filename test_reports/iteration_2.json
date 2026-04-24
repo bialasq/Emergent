@@ -1,0 +1,48 @@
+{
+  "summary": "Backend testing for Dungeon of Echoes iteration 2 — new meta-progression + WebSocket coop endpoints + souls accrual in /api/runs. Added /app/backend/tests/test_meta_and_coop.py (15 cases: 10 for meta/souls + 5 for coop WS) and /app/backend/tests/conftest.py (auto-load frontend/.env so tests don't fall back to http://localhost:8001 where Secure cookies silently drop). Result: 39/39 tests passing. All 24 existing cases still green; all 15 new cases pass. Verified: (1) /api/auth/register returns souls=0, meta={} and does not leak _id; (2) GET /api/auth/me and GET /api/meta include souls+meta and require auth (401 without cookie); (3) POST /api/meta/spend deducts souls, increments upgrade level, enforces SOUL_MAX cap (hp=5), rejects unknown upgrade with 400, rejects not-enough-souls with 400, rejects already-max with 400; (4) POST /api/runs computes souls_earned = floor(score/100)+kills+(50 if victory else 0) — verified 65 for victory(500,10 kills) and 5 for dead(250,3 kills); returns souls_total for auth user, null for guest; user.souls is not touched for guests; (5) WS /api/ws/coop/{code}?name=X&cls=Y — first joiner receives {type:'joined', seed, players:[]}, second joiner sees same deterministic seed in 'joined' with players:[first]; pos broadcasts go to OTHERS as {type:'event', from, data:{type:'pos',...}} and are NOT echoed back to sender; room auto-cleans when empty (reconnecting re-uses deterministic seed, no ghost players); 5th joiner gets error msg + close (code 4001).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/login", "issue": "Brute-force rate limit uses request.client.host which is the ingress-pod IP; under round-robin load-balancing without X-Forwarded-For parsing, attempts from the same real client can be spread across pods and never reach the 5-hit threshold. My test pinned this by reusing a single requests.Session (keep-alive → same backend pod). Consider parsing X-Forwarded-For in login() for robust lockouts."},
+      {"endpoint": "WebSocket /api/ws/coop/{code}", "issue": "Seed is derived from abs(hash(code)) — Python's hash() of strings is randomized per-process (PYTHONHASHSEED) so two different backend workers/pods produce different seeds for the same room code. Currently server runs single-worker so it's consistent, but horizontal scaling would break room sync. Use a stable hash like zlib.crc32(code.encode()) or hashlib.sha1."},
+      {"endpoint": "WebSocket /api/ws/coop/{code}", "issue": "room_code is not validated to be alphanumeric — arbitrary chars allowed (truncated to 12 uppercase). Review request says 'uppercase A-Z0-9'; code accepts anything. Low priority."},
+      {"endpoint": "POST /api/meta/award", "issue": "Not covered in review criteria so not exercised; present in server.py as a redundant /inc endpoint. Works but duplicates logic in POST /runs — flag for DRY."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_meta_and_coop.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Consider parsing X-Forwarded-For in /api/auth/login so brute-force lockout works reliably behind ingress load-balancers.",
+    "Replace Python hash(code) in ws_coop with a deterministic hash (crc32 / sha1) so seed is identical across processes.",
+    "Validate room_code as ^[A-Z0-9]{1,12}$ at the WS handler (currently any chars accepted, only truncated).",
+    "Optionally clamp RunSubmit.guest_id length/charset (already flagged in iteration 1)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 519 lines — still under 700 but growing; if more endpoints are added, consider splitting into auth.py/runs.py/meta.py/coop.py routers.",
+    "/api/meta/spend uses read-modify-write (find_one then update_one) without an atomic guard — two concurrent spends on the same account could both see the same souls and succeed, effectively spending the same soul twice. Use $inc with a conditional filter {souls: {$gte: cost}, f'meta.{up_id}': {$lt: max_lvl}} to make it atomic.",
+    "broadcast() catches Exception silently and evicts the player; a transient send error (e.g., slow client) would drop them. Acceptable MVP behaviour but consider distinguishing WebSocketDisconnect vs generic Exception.",
+    "POST /meta/award is dead code relative to /runs (runs already awards atomically). Remove or document explicitly as idempotent fallback to avoid divergence.",
+    "CoopRoom.lock is held only during player add/remove; message forwarding in broadcast iterates room.players without the lock, which is fine for GIL-protected dict but not if future code mutates on another coroutine mid-iteration — using `list(room.players.items())` already handles this, good.",
+    "No auth/handshake on the WebSocket — anyone who knows a room code can join as any name/class. Fine for a casual coop MVP but worth noting.",
+    "JWT_SECRET env-var is required (no fallback) — good. bcrypt hash format $2b$ verified via successful register+login.",
+    "httpOnly+Secure+SameSite=None cookies still need CORS_ORIGINS to be an explicit origin (not '*') in production for credentialed cross-origin requests. .env still has CORS_ORIGINS='*' — same note as iteration 1.",
+    "No _id leaks anywhere — verified across runs, leaderboard, meta, auth/me."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_meta_and_coop.py",
+    "/app/backend/tests/conftest.py"
+  ],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "n/a"},
+  "test_credentials": "No seeded user — tests register fresh TEST_*@test.com users per run.",
+  "seed_data_creation": "Tests insert TEST_-prefixed users + runs into test_database. Runs from previous iterations accumulate but do not interfere (leaderboard sort/filter tested on live data). No explicit cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green (39/39). Note: conftest.py auto-loads REACT_APP_BACKEND_URL from /app/frontend/.env so tests hit the ingress URL over HTTPS — required because access_token cookie is Secure-flagged and requests won't send it back over plain http://localhost:8001. If running from a shell without REACT_APP_BACKEND_URL set, conftest handles it. WebSocket tests use the `websockets` lib (already installed, v16.0) and hit wss://<ingress>/api/ws/coop/<CODE>. Coop seed is deterministic per room code within a single process — watch out if scaling backend to multiple workers. Brute-force lockout test was flaky with fresh TCP connections (different ingress pods) — fixed by reusing a single requests.Session for keep-alive; if this flakes again in future, consider implementing X-Forwarded-For parsing in login().",
+  "rca of the issue": "Initial pytest run showed 9 failures, all authenticated-endpoint tests (me, refresh, runs/me, meta). Root cause: REACT_APP_BACKEND_URL was not exported to the shell running pytest, so BASE_URL fell back to http://localhost:8001. Login over plain HTTP sets cookies with Secure flag; requests.Session refuses to attach Secure cookies on subsequent http:// requests, so the Authorization layer saw no token and returned 401. Fix: added /app/backend/tests/conftest.py that reads /app/frontend/.env and populates REACT_APP_BACKEND_URL so the suite always targets the HTTPS ingress. Brute-force test separately needed Session reuse (keep-alive) so all 6 attempts land on the same backend pod and share the login_attempts counter."
+}

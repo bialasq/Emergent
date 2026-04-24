@@ -8,6 +8,7 @@ import Register from "./pages/Register";
 import CharacterSelect from "./pages/CharacterSelect";
 import GamePage from "./pages/Game";
 import Leaderboard from "./pages/Leaderboard";
+import MultiplayerLobby from "./pages/MultiplayerLobby";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/play" element={<CharacterSelect />} />
+            <Route path="/coop" element={<MultiplayerLobby />} />
             <Route path="/game" element={<GamePage />} />
             <Route path="/leaderboard" element={<Leaderboard />} />
           </Routes>

@@ -6,7 +6,10 @@ import HUD from "../components/HUD";
 import LevelUpModal from "../components/LevelUpModal";
 import { useAuth } from "../contexts/AuthContext";
 import { api } from "../services/api";
-import { Flame, Pause, LogOut } from "lucide-react";
+import { getGuestMeta, setGuestMeta, addGuestSouls } from "../game/meta";
+import { applyMetaToStats } from "../game/spells";
+import { CoopClient } from "../services/coop";
+import { Flame, Pause, LogOut, Users } from "lucide-react";
 
 function useQuery() {
   return new URLSearchParams(useLocation().search);
@@ -15,49 +18,94 @@ function useQuery() {
 export default function GamePage() {
   const q = useQuery();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
 
   const cls = q.get("cls") === "mage" ? "mage" : "warrior";
   const name = q.get("name") || "Wanderer";
-  const seed = Number(q.get("seed")) || 1;
+  let seed = Number(q.get("seed")) || 1;
+  const room = q.get("room") || "";
 
   const canvasRef = useRef(null);
   const minimapRef = useRef(null);
   const gameRef = useRef(null);
+  const coopRef = useRef(null);
 
   const [state, setState] = useState(null);
   const [levelUp, setLevelUp] = useState({ open: false, upgrades: [] });
   const [death, setDeath] = useState(null);
   const [victory, setVictory] = useState(null);
   const [submitted, setSubmitted] = useState(false);
+  const [souls, setSouls] = useState(0);
+  const [coopReady, setCoopReady] = useState(!room);
+  const [coopPlayers, setCoopPlayers] = useState([]);
 
-  // Init game once
+  // load meta
   useEffect(() => {
-    const game = new Game({
-      canvas: canvasRef.current,
-      minimap: minimapRef.current,
-      seed,
-      classKey: cls,
-      characterName: name,
-      onStateChange: setState,
-      onDeath: (summary) => setDeath(summary),
-      onVictory: (summary) => setVictory(summary),
-      onLevelUp: (upgrades) => setLevelUp({ open: true, upgrades }),
-    });
-    gameRef.current = game;
-    game.start();
+    if (user && user.username) {
+      setSouls(user.souls || 0);
+    } else {
+      const m = getGuestMeta();
+      setSouls(m.souls || 0);
+    }
+  }, [user]);
 
-    const onResize = () => game.resize();
+  // Init game (and coop if room present)
+  useEffect(() => {
+    const meta = user && user.username ? (user.meta || {}) : getGuestMeta().upgrades;
+    const { startPotions, unlockedSpells } = applyMetaToStats({}, meta);
+
+    const start = (effSeed) => {
+      const game = new Game({
+        canvas: canvasRef.current,
+        minimap: minimapRef.current,
+        seed: effSeed,
+        classKey: cls,
+        characterName: name,
+        meta,
+        startPotions,
+        unlockedSpells,
+        coop: coopRef.current ? { ghosts: coopRef.current.ghosts } : null,
+        onStateChange: setState,
+        onDeath: (summary) => setDeath(summary),
+        onVictory: (summary) => setVictory(summary),
+        onLevelUp: (upgrades) => setLevelUp({ open: true, upgrades }),
+        onBroadcast: (msg) => coopRef.current && coopRef.current.send(msg),
+      });
+      gameRef.current = game;
+      game.start();
+    };
+
+    if (room) {
+      const coop = new CoopClient({
+        room, name, cls,
+        onReady: ({ seed: rseed }) => {
+          setCoopReady(true);
+          start(rseed);
+        },
+        onJoin: (p) => setCoopPlayers((prev) => [...prev, p]),
+        onLeave: () => { /* connection closed */ },
+        onEvent: () => { if (gameRef.current) gameRef.current.dirty = true; },
+        onError: () => setCoopReady(false),
+      });
+      coopRef.current = coop;
+      coop.connect();
+      // seed players
+      setTimeout(() => setCoopPlayers(Array.from(coop.players.values())), 200);
+    } else {
+      start(seed);
+    }
+
+    const onResize = () => gameRef.current && gameRef.current.resize();
     window.addEventListener("resize", onResize);
-
     return () => {
       window.removeEventListener("resize", onResize);
-      game.stop();
+      gameRef.current && gameRef.current.stop();
+      coopRef.current && coopRef.current.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Hotkeys 1/2/3 for level up choices
+  // Hotkeys 1/2/3 for level up
   useEffect(() => {
     if (!levelUp.open) return;
     const h = (e) => {
@@ -80,7 +128,7 @@ export default function GamePage() {
     if (submitted) return;
     setSubmitted(true);
     try {
-      await api.post("/runs", {
+      const res = await api.post("/runs", {
         seed: summary.seed,
         character_class: summary.character_class,
         character_name: summary.character_name,
@@ -90,12 +138,29 @@ export default function GamePage() {
         duration_seconds: summary.duration_seconds,
         outcome,
         level: summary.level,
+        guest_id: user && user.username ? undefined : name,
       });
+      // update local souls
+      if (user && user.username) {
+        if (res.data && typeof res.data.souls_total === "number") {
+          setSouls(res.data.souls_total);
+          refresh();
+        }
+      } else {
+        const m = addGuestSouls(summary.souls_earned || 0);
+        setSouls(m.souls);
+        setGuestMeta(m);
+      }
+      // notify coop
+      if (coopRef.current && outcome === "dead") coopRef.current.send({ type: "death" });
     } catch (e) {
-      // non-fatal
-      console.warn("Run submit failed", e);
+      // fallback: still award local souls if guest
+      if (!(user && user.username)) {
+        const m = addGuestSouls(summary.souls_earned || 0);
+        setSouls(m.souls);
+      }
     }
-  }, [submitted]);
+  }, [submitted, user, refresh, name]);
 
   useEffect(() => {
     if (death) submitRun(death, "dead");
@@ -125,14 +190,21 @@ export default function GamePage() {
   return (
     <div className="min-h-screen px-4 py-4" data-testid="game-page">
       <div className="max-w-[1400px] mx-auto">
-        {/* top bar */}
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <div className="flex items-center gap-3">
             <Flame className="w-5 h-5 text-dungeon-blood animate-flicker" />
             <span className="font-heading text-xs tracking-[0.3em] uppercase text-dungeon-muted">
               Dungeon of Echoes
             </span>
-            <span className="text-dungeon-muted font-body text-xs">· seed {seed}</span>
+            {room && (
+              <span className="flex items-center gap-1 text-dungeon-teal text-xs font-sub" data-testid="coop-room-badge">
+                <Users className="w-3.5 h-3.5" /> Room {room}
+                <span className="text-dungeon-muted ml-2">{coopPlayers.length + 1} / 4</span>
+              </span>
+            )}
+            {!room && (
+              <span className="text-dungeon-muted font-body text-xs">· seed {seed}</span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <button onClick={togglePause} className="btn-dungeon btn-ghost !py-2 !px-3 flex items-center gap-2" data-testid="pause-btn">
@@ -145,7 +217,6 @@ export default function GamePage() {
         </div>
 
         <div className="grid grid-cols-[1fr_320px] gap-4">
-          {/* Canvas frame */}
           <div className="relative dungeon-card p-0 overflow-hidden" style={{ aspectRatio: "16 / 10" }}>
             <span className="rune-corner top-0 left-0 border-t-2 border-l-2 border-r-0 border-b-0" />
             <span className="rune-corner top-0 right-0 border-t-2 border-r-2 border-l-0 border-b-0" />
@@ -157,9 +228,13 @@ export default function GamePage() {
               style={{ background: "#050404" }}
               data-testid="game-canvas"
             />
+            {!coopReady && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/80 font-sub text-dungeon-parchment" data-testid="coop-connecting">
+                <span className="animate-flicker mr-2">✦</span> Connecting to coop room {room}…
+              </div>
+            )}
           </div>
 
-          {/* Right panel: minimap + HUD */}
           <div className="flex flex-col gap-3">
             <div className="dungeon-card p-3">
               <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted mb-2">
@@ -173,19 +248,20 @@ export default function GamePage() {
                 data-testid="game-minimap"
               />
             </div>
-
             <div className="dungeon-card p-4">
-              <HUD state={state} />
+              <HUD state={state} souls={souls} />
             </div>
           </div>
         </div>
 
-        {/* help footer */}
-        <div className="mt-3 text-xs font-body text-dungeon-muted flex flex-wrap gap-4 justify-center" data-testid="controls-hint">
+        <div className="mt-3 text-xs font-body text-dungeon-muted flex flex-wrap gap-3 justify-center" data-testid="controls-hint">
           <span>WASD / Arrows — Move</span>
           <span>Space — Wait</span>
-          <span>{cls === "mage" ? "Step toward foe to cast (5 MP)" : "Step toward foe to strike"}</span>
-          <span>&gt; — Descend stairs</span>
+          <span>H — Mend</span>
+          <span>L — Candleflame</span>
+          <span>G — Quickstep</span>
+          <span>F — Ember Burst</span>
+          <span>T — Binding Rope</span>
           <span>Q — Potion</span>
           <span>R — Mana</span>
           <span>P / Esc — Pause</span>
@@ -224,7 +300,7 @@ export default function GamePage() {
                   ["Kills", (victory || death).kills],
                   ["Score", (victory || death).score],
                   ["Time", `${(victory || death).duration_seconds}s`],
-                  ["Class", (victory || death).character_class],
+                  ["Souls earned", `◈ ${(victory || death).souls_earned || 0}`],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between border-b border-dungeon-border/60 py-2">
                     <span className="text-dungeon-muted uppercase tracking-widest text-xs font-heading">{k}</span>
@@ -233,13 +309,11 @@ export default function GamePage() {
                 ))}
               </div>
 
-              {!user?.username && (
-                <p className="mt-5 font-body text-xs text-dungeon-muted italic">
-                  Tip: inscribe your name to preserve your deeds beyond this session.
-                </p>
-              )}
+              <p className="mt-4 font-body text-xs text-dungeon-muted italic">
+                Hero Souls have been added to your sanctum. Spend them before your next descent.
+              </p>
 
-              <div className="mt-8 flex gap-3">
+              <div className="mt-6 flex gap-3">
                 <Link to="/play" className="flex-1" data-testid="endgame-again-btn">
                   <button className="btn-dungeon w-full">Descend Again</button>
                 </Link>

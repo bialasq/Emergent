@@ -1,22 +1,30 @@
-// Dungeon of Echoes - main game engine.
-// Performance principles:
-//  - requestAnimationFrame loop with dirty-flag; tile layer pre-rendered to offscreen canvas once per level.
-//  - Turn-resolved logic: enemies only think when the player acts → zero AI work on idle frames.
-//  - Damage numbers & particles use a pool reused across turns.
-//  - Movement interpolation for smoothness while keeping logic discrete.
+// Dungeon of Echoes — game engine v2.
+//  * Map is now 300×180 tiles @ 48px → we render tiles ONLY within the viewport
+//    each frame (no giant offscreen pre-render) to keep memory bounded.
+//  * Auto-descend on stepping onto stairs.
+//  * HP/MP bars float above the player (and tiny HP above enemies when damaged).
+//  * Extra actions per turn from level (level 4+ = +1, 8+ = +2, 12+ = +3).
+//  * Spell system: heal, light, haste, fireball, rope — see spells.js.
+//  * Multiplayer-ready: pass `onBroadcast`/`applyRemote` hooks and a `ghosts` map.
 
 import { generateDungeon, isWalkable } from "./dungeon";
 import { computeFOV } from "./fov";
 import { MAP_W, MAP_H, T, TILE } from "./tiles";
 import {
   CLASSES, ENEMIES, ITEMS, spawnTableForDepth, weightedPick,
-  resolveAttack, rollDice, XP_PER_LEVEL, rollUpgrades, applyUpgrade,
+  resolveAttack, XP_PER_LEVEL, rollUpgrades, applyUpgrade,
 } from "./entities";
-import { drawTile, drawPlayer, drawEnemy, drawItem } from "./sprites";
-import { makeRng } from "./rng";
+import { drawTile, drawPlayer, drawEnemy, drawItem, drawGhostPlayer } from "./sprites";
+import { SPELLS, SPELL_ORDER, applyMetaToStats, soulsFromRun } from "./spells";
 
 export class Game {
-  constructor({ canvas, minimap, seed, classKey, characterName, onStateChange, onDeath, onVictory, onLevelUp, onEvent }) {
+  constructor({
+    canvas, minimap, seed, classKey, characterName,
+    meta = {}, unlockedSpells = ["heal", "light"], startPotions = 0,
+    onStateChange, onDeath, onVictory, onLevelUp,
+    onBroadcast, // (msg) — multiplayer sender
+    coop = null, // { ghosts: Map<id,{x,y,cls,name,alive}> }
+  }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d", { alpha: false });
     this.ctx.imageSmoothingEnabled = false;
@@ -27,12 +35,12 @@ export class Game {
     this.seed = seed >>> 0;
     this.classKey = classKey;
     this.characterName = characterName || "Wanderer";
-
     this.onStateChange = onStateChange || (() => {});
     this.onDeath = onDeath || (() => {});
     this.onVictory = onVictory || (() => {});
     this.onLevelUp = onLevelUp || (() => {});
-    this.onEvent = onEvent || (() => {});
+    this.onBroadcast = onBroadcast || null;
+    this.coop = coop;
 
     this.tileSize = TILE;
     this.viewW = 0; this.viewH = 0;
@@ -46,13 +54,17 @@ export class Game {
     this.startedAt = Date.now();
 
     const cls = CLASSES[classKey];
+    const { stats: metaStats } = applyMetaToStats({}, meta);
     this.player = {
       cls: classKey,
       name: this.characterName,
-      x: 0, y: 0, rx: 0, ry: 0, // render positions
-      hp: cls.stats.maxHp, maxHp: cls.stats.maxHp,
-      mp: cls.stats.maxMp, maxMp: cls.stats.maxMp,
-      atk: cls.stats.atk, def: cls.stats.def,
+      x: 0, y: 0, rx: 0, ry: 0,
+      hp: cls.stats.maxHp + (metaStats.maxHp || 0),
+      maxHp: cls.stats.maxHp + (metaStats.maxHp || 0),
+      mp: cls.stats.maxMp + (metaStats.maxMp || 0),
+      maxMp: cls.stats.maxMp + (metaStats.maxMp || 0),
+      atk: cls.stats.atk + (metaStats.atk || 0),
+      def: cls.stats.def + (metaStats.def || 0),
       crit: cls.stats.crit, range: cls.stats.range,
       dmgDice: cls.stats.dmgDice,
       dmgBonus: 0,
@@ -62,26 +74,29 @@ export class Game {
       dodge: 0,
       inv: [],
       flash: 0,
+      // spells
+      unlockedSpells,
+      spellState: {
+        lightTurns: 0,
+        hasteTurns: 0,
+      },
+      // action budget (extra actions at higher level)
+      actionsThisTurn: 0,
     };
+    for (let i = 0; i < startPotions; i++) this.player.inv.push({ kind: "potion", amount: 18, name: "Health Potion" });
 
     this.enemies = [];
     this.items = [];
-    this.damageNumbers = []; // pool-recycled
+    this.damageNumbers = [];
     this.log = [];
     this.explored = new Set();
     this.visible = new Set();
 
-    this.tileCanvas = document.createElement("canvas");
-    this.tileCtx = this.tileCanvas.getContext("2d");
-    this.tileCtx.imageSmoothingEnabled = false;
-
     this.running = false;
     this.paused = false;
     this.awaitingLevelUp = false;
-    this.pendingMove = null;
     this.dirty = true;
     this.lastTs = 0;
-    this.fps = 60;
 
     this.handleKey = this.handleKey.bind(this);
     this.loop = this.loop.bind(this);
@@ -94,6 +109,7 @@ export class Game {
     this.resize();
     requestAnimationFrame(this.loop);
     this.pushState();
+    if (this.onBroadcast) this.onBroadcast({ type: "spawn", x: this.player.x, y: this.player.y, depth: this.depth });
   }
 
   stop() {
@@ -106,12 +122,25 @@ export class Game {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.width = Math.floor(rect.width * dpr);
     this.canvas.height = Math.floor(rect.height * dpr);
-    this.dpr = dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.imageSmoothingEnabled = false;
     this.viewW = rect.width;
     this.viewH = rect.height;
     this.dirty = true;
+  }
+
+  get fovRadius() {
+    return 9 + (this.player.spellState.lightTurns > 0 ? 4 : 0);
+  }
+
+  get extraActionsByLevel() {
+    const lvl = this.player.level;
+    let e = 0;
+    if (lvl >= 4) e = 1;
+    if (lvl >= 8) e = 2;
+    if (lvl >= 12) e = 3;
+    if (this.player.spellState.hasteTurns > 0) e += 1;
+    return e;
   }
 
   pushState() {
@@ -121,9 +150,11 @@ export class Game {
       turn: this.turn,
       kills: this.kills,
       score: this.score,
-      log: this.log.slice(-6),
+      log: this.log.slice(-8),
       paused: this.paused,
       startedAt: this.startedAt,
+      extraActions: this.extraActionsByLevel,
+      fovRadius: this.fovRadius,
     });
   }
 
@@ -138,21 +169,13 @@ export class Game {
     this.player.x = start.x; this.player.y = start.y;
     this.player.rx = start.x; this.player.ry = start.y;
 
-    // pre-render tile layer to offscreen canvas
-    const s = this.tileSize;
-    this.tileCanvas.width = MAP_W * s;
-    this.tileCanvas.height = MAP_H * s;
-    for (let y = 0; y < MAP_H; y++) {
-      for (let x = 0; x < MAP_W; x++) {
-        drawTile(this.tileCtx, map[y][x], x * s, y * s, s, (x * 13 + y * 7) | 0);
-      }
-    }
-
-    // populate enemies
+    // populate enemies scaled for larger map
     this.enemies = [];
     const table = spawnTableForDepth(depth);
-    const enemyCount = 6 + depth * 2;
-    for (let i = 0; i < enemyCount; i++) {
+    const enemyCount = Math.floor((6 + depth * 2) * 6); // ~6x vs small map
+    let attempts = 0;
+    while (this.enemies.length < enemyCount && attempts < enemyCount * 4) {
+      attempts++;
       const room = rooms[rng.int(0, rooms.length - 1)];
       if (room === rooms[0]) continue;
       const x = room.x + rng.int(1, room.w - 2);
@@ -171,8 +194,9 @@ export class Game {
       });
     }
 
-    // final floor boss
     if (depth === this.maxDepth) {
+      // Remove stairs on boss floor — only boss kill leads to victory
+      this.map[exit.y][exit.x] = T.FLOOR;
       const bossRoom = rooms[rooms.length - 1];
       const base = ENEMIES.lich;
       this.enemies.push({
@@ -184,16 +208,17 @@ export class Game {
       });
     }
 
-    // populate items
     this.items = [];
-    const itemCount = 4 + Math.floor(depth * 1.5);
+    const itemCount = Math.floor((4 + depth * 1.5) * 5);
     const itemKeys = ["potion", "potion", "mana", "gold", "gold", "scroll"];
-    for (let i = 0; i < itemCount; i++) {
+    attempts = 0;
+    while (this.items.length < itemCount && attempts < itemCount * 3) {
+      attempts++;
       const room = rooms[rng.int(0, rooms.length - 1)];
       const x = room.x + rng.int(1, room.w - 2);
       const y = room.y + rng.int(1, room.h - 2);
       if (!isWalkable(map, x, y)) continue;
-      if (this.items.some(it => it.x === x && it.y === y)) continue;
+      if (this.items.some(i => i.x === x && i.y === y)) continue;
       const kind = itemKeys[rng.int(0, itemKeys.length - 1)];
       const amount = kind === "gold" ? rng.int(5, 15 + depth * 3) : ITEMS[kind].value;
       this.items.push({ kind, x, y, amount, name: ITEMS[kind].name });
@@ -206,64 +231,52 @@ export class Game {
   }
 
   updateFOV() {
-    this.visible = computeFOV(this.map, this.player.x, this.player.y, 9);
+    this.visible = computeFOV(this.map, this.player.x, this.player.y, this.fovRadius);
     for (const k of this.visible) this.explored.add(k);
   }
 
   logMsg(msg, kind = "info") {
     this.log.push({ msg, kind, turn: this.turn });
-    if (this.log.length > 40) this.log.shift();
+    if (this.log.length > 80) this.log.shift();
   }
 
   pushDamage(x, y, text, color) {
     this.damageNumbers.push({ x, y, text, color, life: 1.0 });
-    if (this.damageNumbers.length > 30) this.damageNumbers.shift();
+    if (this.damageNumbers.length > 40) this.damageNumbers.shift();
   }
 
-  // --- input ---
+  // ------------- input -----------------
   handleKey(e) {
     if (!this.running || this.awaitingLevelUp) return;
     const k = e.key.toLowerCase();
     if (k === "p" || k === "escape") {
       this.paused = !this.paused;
-      this.pushState();
-      this.dirty = true;
-      e.preventDefault();
-      return;
+      this.pushState(); this.dirty = true; e.preventDefault(); return;
     }
     if (this.paused) return;
 
+    // Spell hotkeys
+    for (const id of SPELL_ORDER) {
+      if (SPELLS[id].hotkey === k) {
+        this.castSpell(id);
+        this.pushState();
+        e.preventDefault();
+        return;
+      }
+    }
+
     let dx = 0, dy = 0;
     switch (k) {
-      case "arrowup": case "w": case "k": dy = -1; break;
-      case "arrowdown": case "s": case "j": dy = 1; break;
-      case "arrowleft": case "a": case "h": dx = -1; break;
-      case "arrowright": case "d": case "l": dx = 1; break;
+      case "arrowup": case "w": dy = -1; break;
+      case "arrowdown": case "s": dy = 1; break;
+      case "arrowleft": case "a": dx = -1; break;
+      case "arrowright": case "d": dx = 1; break;
       case " ": case ".": this.doTurn(0, 0); e.preventDefault(); return;
-      case ">": case "e":
-        if (this.map[this.player.y][this.player.x] === T.STAIRS_DOWN) {
-          if (this.depth >= this.maxDepth) {
-            // shouldn't happen — boss must die, handled separately
-          } else {
-            this.enterFloor(this.depth + 1);
-            this.pushState();
-          }
-        }
-        return;
-      case "q":
-        this.useItemByEffect("potion");
-        this.pushState();
-        return;
-      case "r":
-        this.useItemByEffect("mana");
-        this.pushState();
-        return;
+      case "q": this.useItemByEffect("potion"); this.pushState(); return;
+      case "r": this.useItemByEffect("mana"); this.pushState(); return;
       default: return;
     }
-    if (dx || dy) {
-      this.doTurn(dx, dy);
-      e.preventDefault();
-    }
+    if (dx || dy) { this.doTurn(dx, dy); e.preventDefault(); }
   }
 
   useItemByEffect(effect) {
@@ -282,48 +295,147 @@ export class Game {
     this.dirty = true;
   }
 
-  // --- turn logic ---
+  // ------------- spells -----------------
+  castSpell(id) {
+    if (!this.player.unlockedSpells.includes(id)) {
+      this.logMsg(`The ${SPELLS[id].name} rune is beyond your binding.`, "bump");
+      return;
+    }
+    const s = SPELLS[id];
+    if (this.player.mp < s.mpCost) {
+      this.logMsg(`Not enough mana to weave ${s.name}.`, "bump");
+      return;
+    }
+    let consumed = false;
+    switch (id) {
+      case "heal": {
+        const amt = 18;
+        this.player.hp = Math.min(this.player.maxHp, this.player.hp + amt);
+        this.pushDamage(this.player.x, this.player.y, `+${amt}`, "#b0251a");
+        this.logMsg(`Mend knits your wounds (+${amt} HP).`, "heal");
+        consumed = true;
+        break;
+      }
+      case "light": {
+        this.player.spellState.lightTurns = 15;
+        this.logMsg(`Candleflame flares — your sight widens.`, "spell");
+        consumed = true;
+        break;
+      }
+      case "haste": {
+        this.player.spellState.hasteTurns = 10;
+        this.logMsg(`Quickstep — time slows for you.`, "spell");
+        consumed = true;
+        break;
+      }
+      case "fireball": {
+        // target nearest visible enemy
+        let tgt = null, best = 9999;
+        for (const e of this.enemies) {
+          if (e.hp <= 0) continue;
+          if (!this.visible.has(e.x + "," + e.y)) continue;
+          const d = Math.abs(e.x - this.player.x) + Math.abs(e.y - this.player.y);
+          if (d < best) { best = d; tgt = e; }
+        }
+        if (!tgt) { this.logMsg(`No foes in sight to ember.`, "bump"); return; }
+        for (const e of this.enemies) {
+          if (e.hp <= 0) continue;
+          if (Math.abs(e.x - tgt.x) <= 1 && Math.abs(e.y - tgt.y) <= 1) {
+            const dmg = Math.max(3, 10 + Math.floor(this.player.level * 1.5) - (e.def || 0));
+            e.hp -= dmg; e.flash = 1;
+            this.pushDamage(e.x, e.y, String(dmg), "#e05a1a");
+            if (e.hp <= 0) this.killEnemy(e);
+          }
+        }
+        this.logMsg(`Ember Burst roars across ${tgt.name}'s lair.`, "spell");
+        consumed = true;
+        break;
+      }
+      case "rope": {
+        if (!this.exit) return;
+        const reach = this.explored.has(this.exit.x + "," + this.exit.y);
+        if (!reach) { this.logMsg(`The rope has nowhere to bind — find the stairway first.`, "bump"); return; }
+        this.player.x = this.exit.x; this.player.y = this.exit.y;
+        this.player.rx = this.exit.x; this.player.ry = this.exit.y;
+        this.logMsg(`The Binding Rope whips taut — you snap to the stairway.`, "spell");
+        consumed = true;
+        break;
+      }
+      default: break;
+    }
+    if (consumed) {
+      this.player.mp -= s.mpCost;
+      this.updateFOV();
+      this.enemiesAct();
+      this.turn++;
+      this.dirty = true;
+      this.maybeAutoDescend();
+    }
+    if (this.onBroadcast) this.onBroadcast({ type: "spell", spell: id, x: this.player.x, y: this.player.y });
+  }
+
+  // ------------- turn logic -----------------
   doTurn(dx, dy) {
     if (this.awaitingLevelUp) return;
-    // Player action
+
     if (dx || dy) this.playerMoveOrAttack(dx, dy);
-    // Enemies act
-    this.enemiesAct();
-    // pickup items
-    this.pickupAt(this.player.x, this.player.y);
-    // tick regen
-    if (this.player.regen) {
-      this.player.regenTick++;
-      if (this.player.regenTick >= 6) { this.player.regenTick = 0; this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1); }
+
+    this.player.actionsThisTurn++;
+    const allowedActions = 1 + this.extraActionsByLevel;
+
+    if (this.player.actionsThisTurn >= allowedActions) {
+      // enemies act; end of turn
+      this.enemiesAct();
+      this.player.actionsThisTurn = 0;
+      if (this.player.regen) {
+        this.player.regenTick++;
+        if (this.player.regenTick >= 6) { this.player.regenTick = 0; this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1); }
+      }
+      this.player.mp = Math.min(this.player.maxMp, this.player.mp + 0.08);
+      if (this.player.spellState.lightTurns > 0) this.player.spellState.lightTurns--;
+      if (this.player.spellState.hasteTurns > 0) this.player.spellState.hasteTurns--;
+      this.turn++;
     }
-    this.player.mp = Math.min(this.player.maxMp, this.player.mp + 0.05);
-    this.turn++;
+
+    this.pickupAt(this.player.x, this.player.y);
     this.updateFOV();
+
+    this.maybeAutoDescend();
+
     this.pushState();
     this.dirty = true;
+
+    if (this.onBroadcast) this.onBroadcast({ type: "pos", x: this.player.x, y: this.player.y });
+  }
+
+  maybeAutoDescend() {
+    if (this.map[this.player.y][this.player.x] === T.STAIRS_DOWN) {
+      if (this.depth < this.maxDepth) {
+        this.logMsg(`Stone gives way — you descend deeper.`, "info");
+        this.enterFloor(this.depth + 1);
+        this.player.actionsThisTurn = 0;
+        this.pushState();
+        if (this.onBroadcast) this.onBroadcast({ type: "descend", depth: this.depth });
+      }
+    }
   }
 
   playerMoveOrAttack(dx, dy) {
     const nx = this.player.x + dx;
     const ny = this.player.y + dy;
-    // Attack adjacent enemy?
     const adj = this.enemies.find(e => e.x === nx && e.y === ny && e.hp > 0);
     if (adj) {
       const result = resolveAttack(this.floorRng, {
-        dmg: this.player.dmgDice, bonus: this.player.dmgBonus, crit: this.player.crit,
+        dmg: this.player.dmgDice, bonus: this.player.dmgBonus + (this.player.atk - CLASSES[this.classKey].stats.atk), crit: this.player.crit,
       }, adj);
-      adj.hp -= result.dmg;
-      adj.flash = 1;
+      adj.hp -= result.dmg; adj.flash = 1;
       this.pushDamage(adj.x, adj.y, String(result.dmg) + (result.crit ? "!" : ""), result.crit ? "#f0d89a" : "#e0d3c1");
       this.logMsg(`You strike ${adj.name} for ${result.dmg}${result.crit ? " (crit!)" : ""}.`, "hit");
-      if (adj.hp <= 0) {
-        this.killEnemy(adj);
-      }
+      if (adj.hp <= 0) this.killEnemy(adj);
       return;
     }
-    // Ranged for mage: press direction with no enemy adjacent — shoot in that direction up to range
-    if (this.classKey === "mage" && this.player.mp >= 5) {
-      // look along direction
+    // mage auto-cast
+    if (this.classKey === "mage" && this.player.mp >= 3) {
       for (let r = 1; r <= this.player.range; r++) {
         const tx = this.player.x + dx * r;
         const ty = this.player.y + dy * r;
@@ -334,15 +446,14 @@ export class Game {
             dmg: this.player.dmgDice, bonus: this.player.dmgBonus + 1, crit: this.player.crit,
           }, tgt);
           tgt.hp -= result.dmg; tgt.flash = 1;
-          this.player.mp -= 5;
+          this.player.mp -= 3;
           this.pushDamage(tgt.x, tgt.y, String(result.dmg) + (result.crit ? "!" : ""), "#1fb3b3");
-          this.logMsg(`You hurl arcane flame at ${tgt.name} for ${result.dmg}.`, "spell");
+          this.logMsg(`Arcane flame rips at ${tgt.name} for ${result.dmg}.`, "spell");
           if (tgt.hp <= 0) this.killEnemy(tgt);
           return;
         }
       }
     }
-    // Move
     if (isWalkable(this.map, nx, ny)) {
       this.player.x = nx; this.player.y = ny;
     } else {
@@ -351,12 +462,12 @@ export class Game {
   }
 
   killEnemy(e) {
+    if (e.hp > 0) return; // guard
     e.hp = 0;
     this.kills++;
     this.player.xp += e.xp;
     this.score += e.xp * (1 + this.depth);
     this.logMsg(`${e.name} falls to silence. +${e.xp} XP.`, "kill");
-    // chance to drop loot
     if (this.floorRng.chance(0.3)) {
       const kind = this.floorRng.pick(["potion", "mana", "gold"]);
       this.items.push({ kind, x: e.x, y: e.y, amount: kind === "gold" ? this.floorRng.int(5, 15) : ITEMS[kind].value, name: ITEMS[kind].name });
@@ -364,11 +475,9 @@ export class Game {
     this.enemies = this.enemies.filter(en => en.hp > 0);
     if (e.boss) {
       this.onVictory(this.getSummary("victory"));
-      this.running = false;
-      this.stop();
+      this.running = false; this.stop();
       return;
     }
-    // level up?
     while (this.player.xp >= this.player.nextXp) {
       this.player.xp -= this.player.nextXp;
       this.player.level++;
@@ -397,7 +506,6 @@ export class Game {
       const dy = this.player.y - e.y;
       const dist = Math.abs(dx) + Math.abs(dy);
       if (dist === 1) {
-        // attack
         if (this.player.dodge > 0 && this.floorRng.chance(this.player.dodge)) {
           this.pushDamage(this.player.x, this.player.y, "dodge", "#e0d3c1");
           this.logMsg(`You weave past ${e.name}'s blow.`, "dodge");
@@ -415,8 +523,7 @@ export class Game {
           this.stop();
           return;
         }
-      } else {
-        // greedy move toward player
+      } else if (dist <= 12) {
         const stepX = Math.sign(dx), stepY = Math.sign(dy);
         const tryMoves = Math.abs(dx) > Math.abs(dy)
           ? [[stepX, 0], [0, stepY], [stepX, stepY]]
@@ -430,6 +537,7 @@ export class Game {
           break;
         }
       }
+      // else distant enemy idles
     }
   }
 
@@ -458,7 +566,7 @@ export class Game {
   }
 
   getSummary(outcome) {
-    return {
+    const s = {
       seed: this.seed,
       character_class: this.classKey,
       character_name: this.characterName,
@@ -470,9 +578,11 @@ export class Game {
       level: this.player.level,
       player: { ...this.player },
     };
+    s.souls_earned = soulsFromRun(s);
+    return s;
   }
 
-  // --- render loop ---
+  // ------------- render -----------------
   loop(ts) {
     if (!this.running && !this.paused && this.damageNumbers.length === 0 && this.player.hp <= 0) {
       return;
@@ -480,9 +590,8 @@ export class Game {
     const dt = Math.min(0.05, (ts - this.lastTs) / 1000 || 0);
     this.lastTs = ts;
 
-    // interpolate render positions
     const lerp = (a, b, t) => a + (b - a) * t;
-    const speed = 18; // per second
+    const speed = 18;
     this.player.rx = lerp(this.player.rx, this.player.x, Math.min(1, dt * speed));
     this.player.ry = lerp(this.player.ry, this.player.y, Math.min(1, dt * speed));
     if (Math.abs(this.player.rx - this.player.x) < 0.01) this.player.rx = this.player.x;
@@ -495,7 +604,6 @@ export class Game {
     }
     if (this.player.flash > 0) this.player.flash = Math.max(0, this.player.flash - dt * 4);
 
-    // damage numbers
     for (const d of this.damageNumbers) d.life -= dt * 1.5;
     this.damageNumbers = this.damageNumbers.filter(d => d.life > 0);
 
@@ -519,7 +627,6 @@ export class Game {
   render() {
     const ctx = this.ctx;
     const s = this.tileSize;
-    // background
     ctx.fillStyle = "#050404";
     ctx.fillRect(0, 0, this.viewW, this.viewH);
 
@@ -529,23 +636,29 @@ export class Game {
     this.cameraX = Math.max(0, Math.min(MAP_W * s - this.viewW, camX));
     this.cameraY = Math.max(0, Math.min(MAP_H * s - this.viewH, camY));
 
-    // blit pre-rendered tile canvas
-    ctx.drawImage(this.tileCanvas, -this.cameraX, -this.cameraY);
-
-    // darken unexplored / not-visible cells via an overlay pass
-    // Only draw overlay for tiles within view
     const startX = Math.max(0, Math.floor(this.cameraX / s) - 1);
     const endX = Math.min(MAP_W, Math.ceil((this.cameraX + this.viewW) / s) + 1);
     const startY = Math.max(0, Math.floor(this.cameraY / s) - 1);
     const endY = Math.min(MAP_H, Math.ceil((this.cameraY + this.viewH) / s) + 1);
 
+    // draw tiles (on-the-fly; viewport ~ 25×17 tiles = 425 draws)
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
         const key = x + "," + y;
-        const visible = this.visible.has(key);
-        const explored = this.explored.has(key);
-        if (visible) continue;
-        ctx.fillStyle = explored ? "rgba(0,0,0,0.62)" : "rgba(5,4,3,0.98)";
+        const exp = this.explored.has(key);
+        if (!exp) continue;
+        drawTile(ctx, this.map[y][x], x * s - this.cameraX, y * s - this.cameraY, s, (x * 13 + y * 7) | 0);
+      }
+    }
+
+    // darken non-visible
+    for (let y = startY; y < endY; y++) {
+      for (let x = startX; x < endX; x++) {
+        const key = x + "," + y;
+        const exp = this.explored.has(key);
+        const vis = this.visible.has(key);
+        if (vis) continue;
+        ctx.fillStyle = exp ? "rgba(0,0,0,0.62)" : "rgba(5,4,3,0.98)";
         ctx.fillRect(x * s - this.cameraX, y * s - this.cameraY, s, s);
       }
     }
@@ -564,26 +677,55 @@ export class Game {
         ctx.fillStyle = `rgba(255,230,200,${e.flash * 0.5})`;
         ctx.fillRect(e.rx * s - this.cameraX, e.ry * s - this.cameraY, s, s);
       }
-      // tiny HP bar above enemy if damaged
       if (e.hp < e.maxHp) {
-        const w = s - 4;
+        const w = s - 6;
         ctx.fillStyle = "#0a0807";
-        ctx.fillRect(e.rx * s - this.cameraX + 2, e.ry * s - this.cameraY - 3, w, 2);
+        ctx.fillRect(e.rx * s - this.cameraX + 3, e.ry * s - this.cameraY - 5, w, 3);
         ctx.fillStyle = "#8c1c13";
-        ctx.fillRect(e.rx * s - this.cameraX + 2, e.ry * s - this.cameraY - 3, (w * e.hp) / e.maxHp, 2);
+        ctx.fillRect(e.rx * s - this.cameraX + 3, e.ry * s - this.cameraY - 5, (w * e.hp) / e.maxHp, 3);
       }
     }
 
-    // player
-    drawPlayer(ctx, this.classKey, this.player.rx * s - this.cameraX, this.player.ry * s - this.cameraY, s, this.player.flash * 0.6);
+    // ghost (co-op) players
+    if (this.coop && this.coop.ghosts) {
+      for (const [, g] of this.coop.ghosts) {
+        if (!g || !g.alive) continue;
+        if (g.depth !== this.depth) continue;
+        if (!this.visible.has(g.x + "," + g.y)) continue;
+        drawGhostPlayer(ctx, g.cls, g.name, g.x * s - this.cameraX, g.y * s - this.cameraY, s);
+        // name tag
+        ctx.font = "bold 12px Cinzel, serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#0a0807";
+        ctx.fillText(g.name || "?", g.x * s - this.cameraX + s / 2 + 1, g.y * s - this.cameraY - 8 + 1);
+        ctx.fillStyle = "#c8b79a";
+        ctx.fillText(g.name || "?", g.x * s - this.cameraX + s / 2, g.y * s - this.cameraY - 8);
+      }
+    }
+
+    // player + HP/MP bars above
+    const p = this.player;
+    drawPlayer(ctx, this.classKey, p.rx * s - this.cameraX, p.ry * s - this.cameraY, s, p.flash * 0.6);
+    // HP/MP bars above player
+    const barX = p.rx * s - this.cameraX + 4;
+    const barY = p.ry * s - this.cameraY - 14;
+    const barW = s - 8;
+    ctx.fillStyle = "#0a0807";
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, 5);
+    ctx.fillStyle = "#8c1c13";
+    ctx.fillRect(barX, barY, (barW * p.hp) / p.maxHp, 3);
+    ctx.fillStyle = "#0a0807";
+    ctx.fillRect(barX - 1, barY + 5 - 1, barW + 2, 5);
+    ctx.fillStyle = "#138c8c";
+    ctx.fillRect(barX, barY + 5, (barW * p.mp) / p.maxMp, 3);
 
     // damage numbers
     for (const d of this.damageNumbers) {
       const px = d.x * s - this.cameraX + s / 2;
-      const py = d.y * s - this.cameraY + s / 2 - (1 - d.life) * 22;
+      const py = d.y * s - this.cameraY + s / 2 - (1 - d.life) * 26;
       ctx.globalAlpha = Math.max(0, d.life);
       ctx.fillStyle = "#000";
-      ctx.font = "bold 14px Cinzel, serif";
+      ctx.font = "bold 16px Cinzel, serif";
       ctx.textAlign = "center";
       ctx.fillText(d.text, px + 1, py + 1);
       ctx.fillStyle = d.color;
@@ -591,7 +733,7 @@ export class Game {
       ctx.globalAlpha = 1;
     }
 
-    // vignette (torchlight)
+    // torch vignette
     const grad = ctx.createRadialGradient(
       this.viewW / 2, this.viewH / 2, Math.min(this.viewW, this.viewH) * 0.2,
       this.viewW / 2, this.viewH / 2, Math.max(this.viewW, this.viewH) * 0.8
@@ -602,7 +744,6 @@ export class Game {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, this.viewW, this.viewH);
 
-    // paused overlay
     if (this.paused) {
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillRect(0, 0, this.viewW, this.viewH);
@@ -634,20 +775,25 @@ export class Game {
         c.fillRect(x * scaleX, y * scaleY, Math.max(1, scaleX), Math.max(1, scaleY));
       }
     }
-    // stairs
-    if (this.explored.has(this.exit.x + "," + this.exit.y)) {
+    if (this.exit && this.explored.has(this.exit.x + "," + this.exit.y)) {
       c.fillStyle = "#b8860b";
-      c.fillRect(this.exit.x * scaleX - 1, this.exit.y * scaleY - 1, scaleX + 2, scaleY + 2);
+      c.fillRect(this.exit.x * scaleX - 1, this.exit.y * scaleY - 1, Math.max(2, scaleX + 2), Math.max(2, scaleY + 2));
     }
-    // enemies
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
       if (!this.visible.has(e.x + "," + e.y)) continue;
       c.fillStyle = e.boss ? "#b8860b" : "#8c1c13";
-      c.fillRect(e.x * scaleX - 1, e.y * scaleY - 1, scaleX + 2, scaleY + 2);
+      c.fillRect(e.x * scaleX - 1, e.y * scaleY - 1, Math.max(2, scaleX + 2), Math.max(2, scaleY + 2));
     }
-    // player
+    // ghost players on minimap
+    if (this.coop && this.coop.ghosts) {
+      for (const [, g] of this.coop.ghosts) {
+        if (!g || !g.alive || g.depth !== this.depth) continue;
+        c.fillStyle = "#c8b79a";
+        c.fillRect(g.x * scaleX - 1, g.y * scaleY - 1, Math.max(2, scaleX + 2), Math.max(2, scaleY + 2));
+      }
+    }
     c.fillStyle = "#138c8c";
-    c.fillRect(this.player.x * scaleX - 1, this.player.y * scaleY - 1, scaleX + 2, scaleY + 2);
+    c.fillRect(this.player.x * scaleX - 1, this.player.y * scaleY - 1, Math.max(2, scaleX + 2), Math.max(2, scaleY + 2));
   }
 }

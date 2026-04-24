@@ -116,11 +116,12 @@ class TestAuthLoginMeRefreshLogout:
 
     def test_me_returns_user_when_authenticated(self, fresh_user):
         s = requests.Session()
-        s.post(f"{API}/auth/login", json={
+        lg = s.post(f"{API}/auth/login", json={
             "email": fresh_user["email"], "password": fresh_user["password"]
         }, timeout=10)
+        assert lg.status_code == 200, f"login failed: {lg.status_code} {lg.text} cookies={list(s.cookies.keys())}"
         r = s.get(f"{API}/auth/me", timeout=10)
-        assert r.status_code == 200
+        assert r.status_code == 200, f"/me failed: {r.status_code} {r.text} cookies={list(s.cookies.keys())}"
         data = r.json()
         assert data["email"] == fresh_user["email"].lower()
         assert data["username"] == fresh_user["username"]
@@ -185,8 +186,9 @@ class TestBruteForceLockout:
         assert rr.status_code == 200
 
         statuses = []
+        sess = requests.Session()
         for _ in range(6):
-            r = requests.post(f"{API}/auth/login", json={
+            r = sess.post(f"{API}/auth/login", json={
                 "email": u["email"], "password": "wrong",
             }, timeout=10)
             statuses.append(r.status_code)

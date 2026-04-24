@@ -1,7 +1,7 @@
 // Tile constants & dungeon config
-export const TILE = 24; // pixels per tile on screen (pre-zoom)
-export const MAP_W = 60;
-export const MAP_H = 36;
+export const TILE = 48;          // pixels per tile on screen (doubled — 2x characters & world)
+export const MAP_W = 300;        // 5x wider (was 60)
+export const MAP_H = 180;        // 5x taller (was 36)
 
 export const T = {
   WALL: 0,
