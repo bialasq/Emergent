@@ -1,0 +1,88 @@
+{
+  "theme": "Dark",
+  "archetype": "5 (Jewel & Luxury) - Dark Fantasy Twist",
+  "typography": {
+    "headings": {
+      "font_family": "Cinzel, serif",
+      "import_url": "https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&display=swap",
+      "rules": "Use tracking-widest for main titles. Apply text-shadow to simulate torchlight glow. Do NOT use Inter or Roboto."
+    },
+    "subheadings": {
+      "font_family": "MedievalSharp, cursive",
+      "import_url": "https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap"
+    },
+    "body": {
+      "font_family": "'IM Fell English', serif",
+      "import_url": "https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&display=swap",
+      "rules": "Leading-relaxed for readability. Color should be parchment-white (#e0d3c1)."
+    }
+  },
+  "colors": {
+    "background": "#090808",
+    "surface": "#161311",
+    "surface_parchment": "#e0d3c1",
+    "border": "#31261d",
+    "primary": "#8c1c13",
+    "primary_hover": "#b0251a",
+    "magic_teal": "#138c8c",
+    "text_primary": "#e0d3c1",
+    "text_secondary": "#8c7b68",
+    "text_dark_on_parchment": "#2a221b",
+    "health_bar": "#8c1c13",
+    "mana_bar": "#138c8c",
+    "xp_bar": "#b8860b"
+  },
+  "spacing_and_layout": {
+    "scale": "Tailwind standard with generous padding (p-6, p-8). Container max-w-7xl.",
+    "bento_grid": "Use asymmetrical layouts for the landing page. Avoid rigid symmetry.",
+    "canvas_area": "Fixed aspect ratio (e.g. 800x600). Must be wrapped in a container that looks like a rune-carved stone window."
+  },
+  "components": {
+    "buttons": "Flat background with 1px solid border (#8c1c13). Hover state slightly lifts with a blood red text-shadow and border glow. No extreme rounded corners (use rounded-sm or rounded-none). Font: Cinzel uppercase.",
+    "cards": "Dark surface (#161311) with subtle stone/noise texture overlay. 1px border (#31261d). Inside padding p-6. Do NOT use default Shadcn shadows.",
+    "modals": "Background color of aged parchment (#e0d3c1) for game UI elements like 'Level Up', with dark text (#2a221b). Use inset shadow to mimic burnt edges. Or, if dark, use deep stone #161311.",
+    "canvas_frame": "border-[4px] border-[#1a1614] rounded-none shadow-[0_0_30px_rgba(0,0,0,0.8)] relative. Add pseudo-elements or absolute positioned spans in corners for 'runes'."
+  },
+  "animations": {
+    "hover": "Subtle glow effect. transition-shadow duration-300.",
+    "menus": "Fade in with a slight scale up (Framer Motion: initial opacity 0, scale 0.95).",
+    "in_game_ui": "Use simple CSS animations for HUD elements. Damage numbers float up and fade out. Screen shake on heavy hit."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "hero_background",
+        "url": "https://images.pexels.com/photos/7826034/pexels-photo-7826034.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Atmospheric black and white photo of an eerie abandoned stone cellar with barred windows.",
+        "usage": "Landing page hero background, heavy dark overlay bg-black/80 to ensure text readability."
+      },
+      {
+        "category": "parchment_texture",
+        "url": "https://images.unsplash.com/photo-1711107762183-d99536fb7d6e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzZ8MHwxfHNlYXJjaHwxfHxtZWRpZXZhbCUyMHBhcmNobWVudCUyMHRleHR1cmV8ZW58MHx8fHwxNzc3MDcwODY3fDA&ixlib=rb-4.1.0&q=85",
+        "description": "a piece of parchment paper with torn edges",
+        "usage": "Use as a background-image with blend-mode for modals (Level-up, Pause menu) or About sections."
+      },
+      {
+        "category": "mage_class_avatar",
+        "url": "https://images.pexels.com/photos/30692119/pexels-photo-30692119.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "A mysterious wizard in black-and-white attire holding a wand.",
+        "usage": "Character selection screen for Mage."
+      },
+      {
+        "category": "warrior_class_avatar",
+        "url": "https://images.pexels.com/photos/339805/pexels-photo-339805.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Detailed view of a medieval knight's steel gauntlet grasping a sword.",
+        "usage": "Character selection screen for Warrior."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Build a React app using plain JavaScript (.jsx/.js files), not TypeScript (.tsx/.ts).",
+    "Apply global styling for typography using 'Cinzel' for headers, 'MedievalSharp' for subheaders, and 'IM Fell English' for body text.",
+    "Do NOT use standard generic rounded cards. Stick to sharp edges, dark themes, border-collapse, or 1px subtle borders.",
+    "Implement JWT Auth forms using custom inputs to match the dark fantasy theme (remove rounded borders, use custom colors). Avoid default Shadcn look.",
+    "Game canvas should have image-rendering: pixelated in CSS to ensure the retro look remains sharp.",
+    "All interactive elements MUST include data-testid attributes (e.g., data-testid='play-guest-btn').",
+    "Use framer-motion for smooth UI transitions (e.g., Level Up modal popping in, menus fading)."
+  ]
+}
