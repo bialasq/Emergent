@@ -9,6 +9,7 @@ import logging
 import uuid
 import json
 import asyncio
+import zlib
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
@@ -340,22 +341,29 @@ async def spend_meta(body: MetaSpend, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Unknown upgrade")
     cost = SOUL_COSTS[up_id]
     max_lvl = SOUL_MAX[up_id]
-    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "souls": 1, "meta": 1})
-    if not fresh:
-        raise HTTPException(status_code=404, detail="User not found")
-    current_meta = fresh.get("meta", {}) or {}
-    current_lvl = int(current_meta.get(up_id, 0))
-    if current_lvl >= max_lvl:
-        raise HTTPException(status_code=400, detail="Already at max")
-    if fresh.get("souls", 0) < cost:
-        raise HTTPException(status_code=400, detail="Not enough souls")
-    current_meta[up_id] = current_lvl + 1
-    new_souls = fresh.get("souls", 0) - cost
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"souls": new_souls, "meta": current_meta}},
+    meta_field = f"meta.{up_id}"
+    # Atomic compare-and-swap: only succeeds if souls >= cost AND current level < max
+    updated = await db.users.find_one_and_update(
+        {
+            "id": user["id"],
+            "souls": {"$gte": cost},
+            "$or": [{meta_field: {"$exists": False}}, {meta_field: {"$lt": max_lvl}}],
+        },
+        {"$inc": {"souls": -cost, meta_field: 1}},
+        return_document=True,
+        projection={"_id": 0, "souls": 1, "meta": 1},
     )
-    return MetaState(souls=new_souls, upgrades=current_meta)
+    if not updated:
+        # determine why
+        fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "souls": 1, "meta": 1})
+        if not fresh:
+            raise HTTPException(status_code=404, detail="User not found")
+        if int((fresh.get("meta") or {}).get(up_id, 0)) >= max_lvl:
+            raise HTTPException(status_code=400, detail="Already at max")
+        if fresh.get("souls", 0) < cost:
+            raise HTTPException(status_code=400, detail="Not enough souls")
+        raise HTTPException(status_code=400, detail="Cannot apply upgrade")
+    return MetaState(souls=updated.get("souls", 0), upgrades=updated.get("meta", {}) or {})
 
 
 @api_router.post("/meta/award")
@@ -418,8 +426,8 @@ async def ws_coop(websocket: WebSocket, room_code: str, name: str = "Wanderer", 
     # cap rooms at 4 players
     room = COOP_ROOMS.get(code)
     if room is None:
-        # deterministic seed per room code
-        seed = abs(hash(code)) % (2 ** 31)
+        # deterministic seed per room code (zlib.crc32 is process-stable)
+        seed = zlib.crc32(code.encode("utf-8")) & 0x7FFFFFFF
         room = CoopRoom(code, seed)
         COOP_ROOMS[code] = room
     if len(room.players) >= 4:

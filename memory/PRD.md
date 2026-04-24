@@ -70,3 +70,39 @@
 
 ## Test credentials
 See /app/memory/test_credentials.md (no seed user; register fresh accounts).
+
+---
+
+## Iteration 2 — Feb 2026
+
+### New P1 features (all implemented)
+- **Hero Soul meta-progression** with persistent storage:
+  - Authenticated → MongoDB `users.souls` + `users.meta`; atomic compare-and-swap on /api/meta/spend
+  - Guests → `localStorage` (`dungeon_echoes_meta`)
+  - Sanctum panel on `/play` with 8 upgrades (HP/MP/ATK/DEF/Potions + 3 spell unlocks)
+- **Multiplayer co-op via WebSocket** at `/api/ws/coop/{room_code}`:
+  - 2–4 player rooms, deterministic seed via crc32(code), parallel descent (own enemies, shared seed)
+  - Other players appear as spectral echoes on canvas + minimap when in FOV
+  - Page: `/coop` (Create / Join with random code generator)
+- **Map 5× per dimension** → 300×180 tiles. Switched from offscreen pre-render to on-the-fly viewport tile rendering (~425 draws/frame) to keep memory bounded.
+- **Auto-descend on stairs** — stepping on STAIRS_DOWN immediately advances the floor
+- **HP/MP bars float above the player sprite** on canvas
+- **Characters 2× larger** — TILE 24 → 48 px, sprites refactored to `ctx.scale()` for any tileSize
+- **Speed = level**: extra actions per turn (level 4: +1, 8: +2, 12: +3); Quickstep spell adds +1 more for 10 turns
+- **Spell system** (unlocked or via Hero Souls):
+  - H — Mend (8 MP, +18 HP)  [baseline]
+  - L — Candleflame (5 MP, +4 FOV for 15 turns)  [baseline]
+  - G — Quickstep (10 MP, +1 action/turn for 10 turns)  [unlock 25 souls]
+  - F — Ember Burst (12 MP, AoE around nearest visible foe)  [unlock 35 souls]
+  - T — Binding Rope (15 MP, teleport to known stairs down)  [unlock 50 souls]
+
+### Backend (39/39 tests passing)
+- `GET /api/meta`, `POST /api/meta/spend` (atomic), `POST /api/meta/award`
+- `WebSocket /api/ws/coop/{room}` (4-player cap, auto-cleanup, deterministic seed via crc32)
+- `POST /api/runs` now increments `users.souls` for authenticated users and returns `souls_total`
+- `souls_earned = floor(score/100) + kills + (50 if victory else 0)`
+
+### Backlog (next priorities)
+- P1: Authoritative server combat for true shared-enemy multiplayer
+- P2: Audio (SFX + ambient music), Daily Challenge (fixed seed leaderboard)
+- P2: Touch controls, Rogue + Ranger classes, animated sprites
