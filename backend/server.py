@@ -130,6 +130,7 @@ class LeaderboardEntry(BaseModel):
     character_class: str
     character_name: str
     depth: int
+    level: int
     score: int
     kills: int
     duration_seconds: int
@@ -283,6 +284,7 @@ async def leaderboard(limit: int = 50, character_class: Optional[str] = None):
             character_class=r["character_class"],
             character_name=r["character_name"],
             depth=r["depth"],
+            level=r.get("level", 1),
             score=r["score"],
             kills=r["kills"],
             duration_seconds=r["duration_seconds"],

@@ -112,7 +112,7 @@ export default function Leaderboard() {
                     {e.character_class}
                   </span>
                   <span className="text-dungeon-parchment">{e.depth}</span>
-                  <span className="text-dungeon-muted">—</span>
+                  <span className="text-dungeon-parchment">{e.level ?? "—"}</span>
                   <span className="text-dungeon-parchment">{e.kills}</span>
                   <span className="text-dungeon-muted text-xs">{fmtTime(e.duration_seconds)}</span>
                   <span className="text-right text-dungeon-gold font-heading">{e.score}</span>
