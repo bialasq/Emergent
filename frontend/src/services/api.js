@@ -1,12 +1,6 @@
 import axios from "axios";
 
-const CSRF_COOKIE = "csrf_token";
-
-function getCookie(name) {
-  if (typeof document === "undefined") return "";
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&")}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : "";
-}
+const ACCESS_TOKEN_KEY = "doe_access_token";
 
 const raw = process.env.REACT_APP_BACKEND_URL;
 const devFallback =
@@ -18,17 +12,26 @@ export const API_BASE = BACKEND ? `${BACKEND}/api` : "/api";
 
 export const api = axios.create({
   baseURL: API_BASE,
-  withCredentials: true,
+  // Cross-domain (pages.dev -> workers.dev) cookie auth is unreliable due to 3P cookie blocking.
+  // Use bearer token instead.
+  withCredentials: false,
 });
 
-// CSRF header for cookie-auth write requests
+export function getAccessToken() {
+  if (typeof localStorage === "undefined") return "";
+  return localStorage.getItem(ACCESS_TOKEN_KEY) || "";
+}
+
+export function setAccessToken(token) {
+  if (typeof localStorage === "undefined") return;
+  if (!token) localStorage.removeItem(ACCESS_TOKEN_KEY);
+  else localStorage.setItem(ACCESS_TOKEN_KEY, token);
+}
+
+// Authorization header for bearer-token auth
 api.interceptors.request.use((config) => {
-  const method = String(config.method || "get").toLowerCase();
-  const isWrite = ["post", "put", "patch", "delete"].includes(method);
-  if (isWrite) {
-    const csrf = getCookie(CSRF_COOKIE);
-    if (csrf) config.headers["x-csrf-token"] = csrf;
-  }
+  const token = getAccessToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 

@@ -6,11 +6,9 @@ compatibility_date = "2026-04-25"
 [[d1_databases]]
 binding = "DB"
 database_name = "dungeon_of_echoes"
-database_id = "REPLACE_ME"
+database_id = "2234eb19-06bf-4eb2-b242-6fcacf7d99eb"
 
 [vars]
-# Set via `wrangler secret put JWT_SECRET`
-COOKIE_SECURE = "true"
-COOKIE_SAMESITE = "Lax"
-COOKIE_DOMAIN = ""
+# Comma-separated allowed origins for CORS (Pages URL + your custom domain later)
+ALLOWED_ORIGINS = "https://dungeon-of-echoes-9a2.pages.dev"
 

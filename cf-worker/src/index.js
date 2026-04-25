@@ -1,16 +1,32 @@
 // Cloudflare Worker API (D1) for Dungeon of Echoes
-// Routes are mounted under /api/* so Pages can call same-origin.
+// Cross-domain setup (Pages -> workers.dev): use CORS + Bearer auth (no cookies).
 
-const ACCESS_TOKEN_MINUTES = 60 * 12;
-const REFRESH_TOKEN_DAYS = 30;
+const ACCESS_TOKEN_DAYS = 30;
 
-const CSRF_COOKIE = "csrf_token";
-const CSRF_HEADER = "x-csrf-token";
+function corsHeaders(env, req) {
+  const origin = req.headers.get("origin") || "";
+  const allowed = String(env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const allowOrigin = allowed.includes(origin) ? origin : (allowed[0] || "");
+  return {
+    "access-control-allow-origin": allowOrigin,
+    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-allow-headers": "content-type,authorization",
+    "access-control-max-age": "86400",
+    "vary": "Origin",
+  };
+}
 
-function json(data, status = 200, headers = {}) {
+function json(env, req, data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...corsHeaders(env, req),
+      ...headers,
+    },
   });
 }
 
@@ -18,57 +34,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function bad(status, detail) {
-  return json({ detail }, status);
-}
-
-function parseCookies(req) {
-  const raw = req.headers.get("cookie") || "";
-  const out = {};
-  raw.split(";").forEach((p) => {
-    const s = p.trim();
-    if (!s) return;
-    const i = s.indexOf("=");
-    if (i === -1) return;
-    out[s.slice(0, i)] = decodeURIComponent(s.slice(i + 1));
-  });
-  return out;
-}
-
-function setCookie(name, value, opts = {}) {
-  const {
-    httpOnly = false,
-    secure = true,
-    sameSite = "Lax",
-    path = "/",
-    maxAge = null,
-    domain = null,
-  } = opts;
-  let c = `${name}=${encodeURIComponent(value)}; Path=${path}; SameSite=${sameSite}`;
-  if (httpOnly) c += "; HttpOnly";
-  if (secure) c += "; Secure";
-  if (typeof maxAge === "number") c += `; Max-Age=${maxAge}`;
-  if (domain) c += `; Domain=${domain}`;
-  return c;
-}
-
-function deleteCookie(name, opts = {}) {
-  return setCookie(name, "", { ...opts, maxAge: 0 });
+function bad(env, req, status, detail) {
+  return json(env, req, { detail }, status);
 }
 
 function readJson(req) {
   return req.json().catch(() => null);
 }
 
-function isWriteMethod(req) {
-  const m = (req.method || "GET").toUpperCase();
-  return m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE";
-}
-
-function requireCsrf(req, cookies) {
-  const c = cookies[CSRF_COOKIE];
-  const h = req.headers.get(CSRF_HEADER);
-  if (!c || !h || c !== h) throw Object.assign(new Error("CSRF check failed"), { status: 403 });
+function bearerToken(req) {
+  const h = req.headers.get("authorization") || "";
+  if (!h.toLowerCase().startsWith("bearer ")) return "";
+  return h.slice(7).trim();
 }
 
 function base64url(buf) {
@@ -161,7 +138,7 @@ function safeUserOut(u) {
 }
 
 async function getUserByAccess(env, req, cookies) {
-  const token = cookies.access_token || "";
+  const token = bearerToken(req);
   if (!token) return null;
   const payload = await verifyJwtHS256(env.JWT_SECRET, token);
   if (!payload || payload.type !== "access" || !payload.sub) return null;
@@ -174,32 +151,26 @@ async function getUserByAccess(env, req, cookies) {
 async function route(env, req) {
   const url = new URL(req.url);
   const path = url.pathname;
-  const cookies = parseCookies(req);
-
-  // CSRF enforcement for cookie-auth write endpoints (guest endpoints allowed)
-  const csrfFor = (needsAuth) => {
-    if (!isWriteMethod(req)) return;
-    if (!needsAuth) return;
-    requireCsrf(req, cookies);
-  };
+  // CORS preflight
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(env, req) });
 
   // Health
-  if (path === "/api/" || path === "/api") return json({ message: "Dungeon of Echoes API", status: "ok" });
+  if (path === "/api/" || path === "/api") return json(env, req, { message: "Dungeon of Echoes API", status: "ok" });
 
-  // Auth: register/login issue cookies + csrf cookie
+  // Auth: register/login returns access_token
   if (path === "/api/auth/register" && req.method === "POST") {
     const body = await readJson(req);
     const email = String(body?.email || "").toLowerCase().trim();
     const password = String(body?.password || "");
     const username = String(body?.username || "").trim();
-    if (!email || !email.includes("@")) return bad(400, "Invalid email");
-    if (password.length < 6 || password.length > 100) return bad(400, "Invalid password");
-    if (username.length < 2 || username.length > 32) return bad(400, "Invalid username");
+    if (!email || !email.includes("@")) return bad(env, req, 400, "Invalid email");
+    if (password.length < 6 || password.length > 100) return bad(env, req, 400, "Invalid password");
+    if (username.length < 2 || username.length > 32) return bad(env, req, 400, "Invalid username");
 
     const existsEmail = await env.DB.prepare("SELECT 1 FROM users WHERE email=?").bind(email).first();
-    if (existsEmail) return bad(400, "Email already registered");
+    if (existsEmail) return bad(env, req, 400, "Email already registered");
     const existsUser = await env.DB.prepare("SELECT 1 FROM users WHERE username_lower=?").bind(username.toLowerCase()).first();
-    if (existsUser) return bad(400, "Username taken");
+    if (existsUser) return bad(env, req, 400, "Username taken");
 
     const id = uuid();
     const salt = base64url(crypto.getRandomValues(new Uint8Array(18)));
@@ -209,29 +180,16 @@ async function route(env, req) {
       "INSERT INTO users (id,email,username,username_lower,password_hash,password_salt,created_at,souls,meta_json) VALUES (?,?,?,?,?,?,?,?,?)",
     ).bind(id, email, username, username.toLowerCase(), hash, salt, created_at, 0, "{}").run();
 
-    const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_MINUTES * 60;
-    const refreshExp = Math.floor(Date.now() / 1000) + REFRESH_TOKEN_DAYS * 86400;
-    const access = await signJwtHS256(env.JWT_SECRET, { sub: id, email, type: "access", exp: accessExp });
-    const refresh = await signJwtHS256(env.JWT_SECRET, { sub: id, email, type: "refresh", exp: refreshExp });
-    const csrf = base64url(crypto.getRandomValues(new Uint8Array(18)));
-
-    const secure = String(env.COOKIE_SECURE || "true").toLowerCase() !== "false";
-    const sameSite = String(env.COOKIE_SAMESITE || "Lax");
-    const domain = String(env.COOKIE_DOMAIN || "") || null;
-
-    const headers = new Headers();
-    headers.append("set-cookie", setCookie("access_token", access, { httpOnly: true, secure, sameSite, domain, maxAge: ACCESS_TOKEN_MINUTES * 60 }));
-    headers.append("set-cookie", setCookie("refresh_token", refresh, { httpOnly: true, secure, sameSite, domain, maxAge: REFRESH_TOKEN_DAYS * 86400 }));
-    headers.append("set-cookie", setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure, sameSite, domain, maxAge: REFRESH_TOKEN_DAYS * 86400 }));
-
-    return json({ id, email, username, created_at, souls: 0, meta: {} }, 200, Object.fromEntries(headers));
+    const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_DAYS * 86400;
+    const access_token = await signJwtHS256(env.JWT_SECRET, { sub: id, email, type: "access", exp: accessExp });
+    return json(env, req, { access_token });
   }
 
   if (path === "/api/auth/login" && req.method === "POST") {
     const body = await readJson(req);
     const email = String(body?.email || "").toLowerCase().trim();
     const password = String(body?.password || "");
-    if (!email || !password) return bad(400, "Invalid credentials");
+    if (!email || !password) return bad(env, req, 400, "Invalid credentials");
 
     // rate limit (basic)
     const ip = req.headers.get("cf-connecting-ip") || "unknown";
@@ -241,16 +199,16 @@ async function route(env, req) {
       .first();
     if (attempt?.locked_until) {
       const until = Date.parse(attempt.locked_until);
-      if (Number.isFinite(until) && until > Date.now()) return bad(429, "Too many failed attempts. Try later.");
+      if (Number.isFinite(until) && until > Date.now()) return bad(env, req, 429, "Too many failed attempts. Try later.");
     }
-    if (attempt?.count >= 5) return bad(429, "Too many failed attempts. Try later.");
+    if (attempt?.count >= 5) return bad(env, req, 429, "Too many failed attempts. Try later.");
 
     const u = await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();
     if (!u) {
       await env.DB.prepare(
         "INSERT INTO login_attempts (identifier,count,locked_until) VALUES (?,?,?) ON CONFLICT(identifier) DO UPDATE SET count=count+1",
       ).bind(identifier, 1, null).run();
-      return bad(401, "Invalid credentials");
+      return bad(env, req, 401, "Invalid credentials");
     }
     const hash = await pbkdf2Hash(password, u.password_salt);
     if (hash !== u.password_hash) {
@@ -258,79 +216,34 @@ async function route(env, req) {
       await env.DB.prepare(
         "INSERT INTO login_attempts (identifier,count,locked_until) VALUES (?,?,?) ON CONFLICT(identifier) DO UPDATE SET count=count+1, locked_until=excluded.locked_until",
       ).bind(identifier, 1, lockedUntil).run();
-      return bad(401, "Invalid credentials");
+      return bad(env, req, 401, "Invalid credentials");
     }
     await env.DB.prepare("DELETE FROM login_attempts WHERE identifier=?").bind(identifier).run();
 
-    const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_MINUTES * 60;
-    const refreshExp = Math.floor(Date.now() / 1000) + REFRESH_TOKEN_DAYS * 86400;
-    const access = await signJwtHS256(env.JWT_SECRET, { sub: u.id, email, type: "access", exp: accessExp });
-    const refresh = await signJwtHS256(env.JWT_SECRET, { sub: u.id, email, type: "refresh", exp: refreshExp });
-    const csrf = base64url(crypto.getRandomValues(new Uint8Array(18)));
-
-    const secure = String(env.COOKIE_SECURE || "true").toLowerCase() !== "false";
-    const sameSite = String(env.COOKIE_SAMESITE || "Lax");
-    const domain = String(env.COOKIE_DOMAIN || "") || null;
-
-    const headers = new Headers();
-    headers.append("set-cookie", setCookie("access_token", access, { httpOnly: true, secure, sameSite, domain, maxAge: ACCESS_TOKEN_MINUTES * 60 }));
-    headers.append("set-cookie", setCookie("refresh_token", refresh, { httpOnly: true, secure, sameSite, domain, maxAge: REFRESH_TOKEN_DAYS * 86400 }));
-    headers.append("set-cookie", setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure, sameSite, domain, maxAge: REFRESH_TOKEN_DAYS * 86400 }));
-
-    const out = safeUserOut(u);
-    return json(out, 200, Object.fromEntries(headers));
+    const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_DAYS * 86400;
+    const access_token = await signJwtHS256(env.JWT_SECRET, { sub: u.id, email, type: "access", exp: accessExp });
+    return json(env, req, { access_token });
   }
 
   if (path === "/api/auth/logout" && req.method === "POST") {
-    csrfFor(true);
-    const secure = String(env.COOKIE_SECURE || "true").toLowerCase() !== "false";
-    const sameSite = String(env.COOKIE_SAMESITE || "Lax");
-    const domain = String(env.COOKIE_DOMAIN || "") || null;
-    const headers = new Headers();
-    headers.append("set-cookie", deleteCookie("access_token", { httpOnly: true, secure, sameSite, domain }));
-    headers.append("set-cookie", deleteCookie("refresh_token", { httpOnly: true, secure, sameSite, domain }));
-    headers.append("set-cookie", deleteCookie(CSRF_COOKIE, { httpOnly: false, secure, sameSite, domain }));
-    return json({ ok: true }, 200, Object.fromEntries(headers));
+    return json(env, req, { ok: true });
   }
 
   if (path === "/api/auth/refresh" && req.method === "POST") {
-    // refresh is a write and must be CSRF-protected
-    csrfFor(true);
-    const token = cookies.refresh_token || "";
-    const payload = await verifyJwtHS256(env.JWT_SECRET, token);
-    if (!payload || payload.type !== "refresh" || !payload.sub) return bad(401, "Invalid refresh token");
-
-    const u = await env.DB.prepare("SELECT id,email,username,created_at,souls,meta_json FROM users WHERE id=?")
-      .bind(payload.sub)
-      .first();
-    if (!u) return bad(401, "User not found");
-
-    const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_MINUTES * 60;
-    const access = await signJwtHS256(env.JWT_SECRET, { sub: u.id, email: u.email, type: "access", exp: accessExp });
-    const csrf = base64url(crypto.getRandomValues(new Uint8Array(18)));
-
-    const secure = String(env.COOKIE_SECURE || "true").toLowerCase() !== "false";
-    const sameSite = String(env.COOKIE_SAMESITE || "Lax");
-    const domain = String(env.COOKIE_DOMAIN || "") || null;
-
-    const headers = new Headers();
-    headers.append("set-cookie", setCookie("access_token", access, { httpOnly: true, secure, sameSite, domain, maxAge: ACCESS_TOKEN_MINUTES * 60 }));
-    headers.append("set-cookie", setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure, sameSite, domain, maxAge: REFRESH_TOKEN_DAYS * 86400 }));
-    return json({ ok: true }, 200, Object.fromEntries(headers));
+    return bad(env, req, 400, "Refresh not supported in bearer mode");
   }
 
   if (path === "/api/auth/me" && req.method === "GET") {
-    const u = await getUserByAccess(env, req, cookies);
-    if (!u) return bad(401, "Not authenticated");
-    return json(safeUserOut(u));
+    const u = await getUserByAccess(env, req);
+    if (!u) return bad(env, req, 401, "Not authenticated");
+    return json(env, req, safeUserOut(u));
   }
 
   // Runs / Leaderboard
   if (path === "/api/runs" && req.method === "POST") {
-    const u = await getUserByAccess(env, req, cookies);
-    if (u) csrfFor(true);
+    const u = await getUserByAccess(env, req);
     const body = await readJson(req);
-    if (!body) return bad(400, "Invalid payload");
+    if (!body) return bad(env, req, 400, "Invalid payload");
     const run_id = uuid();
     const seed = Number(body.seed || 0) | 0;
     const character_class = String(body.character_class || "");
@@ -342,9 +255,9 @@ async function route(env, req) {
     const outcome = String(body.outcome || "");
     const level = clamp(Number(body.level || 1) | 0, 1, 999);
 
-    if (!["warrior", "mage", "rogue", "ranger"].includes(character_class)) return bad(400, "Invalid class");
-    if (!["dead", "victory", "abandoned"].includes(outcome)) return bad(400, "Invalid outcome");
-    if (!character_name) return bad(400, "Invalid name");
+    if (!["warrior", "mage", "rogue", "ranger"].includes(character_class)) return bad(env, req, 400, "Invalid class");
+    if (!["dead", "victory", "abandoned"].includes(outcome)) return bad(env, req, 400, "Invalid outcome");
+    if (!character_name) return bad(env, req, 400, "Invalid name");
 
     const created_at = nowIso();
     const souls_earned = soulsFromRun({ score, kills, outcome });
@@ -365,7 +278,7 @@ async function route(env, req) {
       const row = await env.DB.prepare("SELECT souls FROM users WHERE id=?").bind(u.id).first();
       souls_total = row?.souls ?? null;
     }
-    return json({ id: run_id, ok: true, souls_earned, souls_total });
+    return json(env, req, { id: run_id, ok: true, souls_earned, souls_total });
   }
 
   if (path === "/api/leaderboard" && req.method === "GET") {
@@ -391,43 +304,42 @@ async function route(env, req) {
       created_at: r.created_at,
       is_guest: !!r.is_guest,
     }));
-    return json(out);
+    return json(env, req, out);
   }
 
   if (path === "/api/runs/me" && req.method === "GET") {
-    const u = await getUserByAccess(env, req, cookies);
-    if (!u) return bad(401, "Not authenticated");
+    const u = await getUserByAccess(env, req);
+    if (!u) return bad(env, req, 401, "Not authenticated");
     const rows = await env.DB.prepare("SELECT * FROM runs WHERE user_id=? ORDER BY created_at DESC LIMIT 50").bind(u.id).all();
-    return json(rows.results || []);
+    return json(env, req, rows.results || []);
   }
 
   // Meta progression (souls + upgrades)
   if (path === "/api/meta" && req.method === "GET") {
-    const u = await getUserByAccess(env, req, cookies);
-    if (!u) return bad(401, "Not authenticated");
-    return json({ souls: u.souls || 0, upgrades: JSON.parse(u.meta_json || "{}") });
+    const u = await getUserByAccess(env, req);
+    if (!u) return bad(env, req, 401, "Not authenticated");
+    return json(env, req, { souls: u.souls || 0, upgrades: JSON.parse(u.meta_json || "{}") });
   }
 
   if (path === "/api/meta/spend" && req.method === "POST") {
-    csrfFor(true);
-    const u = await getUserByAccess(env, req, cookies);
-    if (!u) return bad(401, "Not authenticated");
+    const u = await getUserByAccess(env, req);
+    if (!u) return bad(env, req, 401, "Not authenticated");
     const body = await readJson(req);
     const up_id = String(body?.upgrade_id || "");
     const SOUL_COSTS = { hp: 5, mp: 5, atk: 10, def: 10, pot: 5, haste: 25, fireball: 35, rope: 50 };
     const SOUL_MAX = { hp: 5, mp: 5, atk: 3, def: 3, pot: 3, haste: 1, fireball: 1, rope: 1 };
-    if (!SOUL_COSTS[up_id]) return bad(400, "Unknown upgrade");
+    if (!SOUL_COSTS[up_id]) return bad(env, req, 400, "Unknown upgrade");
     const cost = SOUL_COSTS[up_id];
     const max = SOUL_MAX[up_id];
     const meta = JSON.parse(u.meta_json || "{}");
     const cur = Number(meta[up_id] || 0) | 0;
-    if (cur >= max) return bad(400, "Already at max");
-    if ((u.souls || 0) < cost) return bad(400, "Not enough souls");
+    if (cur >= max) return bad(env, req, 400, "Already at max");
+    if ((u.souls || 0) < cost) return bad(env, req, 400, "Not enough souls");
     meta[up_id] = cur + 1;
     await env.DB.prepare("UPDATE users SET souls=souls-?, meta_json=? WHERE id=?")
       .bind(cost, JSON.stringify(meta), u.id).run();
     const row = await env.DB.prepare("SELECT souls,meta_json FROM users WHERE id=?").bind(u.id).first();
-    return json({ souls: row?.souls || 0, upgrades: JSON.parse(row?.meta_json || "{}") });
+    return json(env, req, { souls: row?.souls || 0, upgrades: JSON.parse(row?.meta_json || "{}") });
   }
 
   // Daily seed + leaderboard
@@ -442,7 +354,7 @@ async function route(env, req) {
     const digest = await crypto.subtle.digest("SHA-256", enc);
     const bytes = new Uint8Array(digest);
     const seed = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
-    return json({ date, seed, tag: `DAILY-${date}` });
+    return json(env, req, { date, seed, tag: `DAILY-${date}` });
   }
 
   if (path === "/api/daily/leaderboard" && req.method === "GET") {
@@ -466,20 +378,19 @@ async function route(env, req) {
       created_at: r.created_at,
       is_guest: !!r.is_guest,
     }));
-    return json(out);
+    return json(env, req, out);
   }
 
-  return bad(404, "Not found");
+  return bad(env, req, 404, "Not found");
 }
 
 export default {
   async fetch(req, env, ctx) {
     try {
-      // CORS is intentionally omitted because Pages + Worker should be same-origin.
       return await route(env, req);
     } catch (e) {
       const status = e?.status || 500;
-      return bad(status, status === 500 ? "Server error" : e.message);
+      return bad(env, req, status, status === 500 ? "Server error" : e.message);
     }
   },
 };

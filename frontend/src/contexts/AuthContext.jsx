@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { api, formatApiError } from "../services/api";
+import { api, formatApiError, setAccessToken } from "../services/api";
 
 const AuthContext = createContext(null);
 
@@ -12,17 +12,7 @@ export function AuthProvider({ children }) {
       const { data } = await api.get("/auth/me");
       setUser(data);
     } catch (err) {
-      if (err?.response?.status === 401) {
-        try {
-          await api.post("/auth/refresh");
-          const { data } = await api.get("/auth/me");
-          setUser(data);
-        } catch {
-          setUser(false);
-        }
-      } else {
-        setUser(false);
-      }
+      setUser(false);
     } finally {
       setLoading(false);
     }
@@ -34,18 +24,22 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
-    setUser(data);
-    return data;
+    if (data?.access_token) setAccessToken(data.access_token);
+    const me = await api.get("/auth/me");
+    setUser(me.data);
+    return me.data;
   };
 
   const register = async (email, password, username) => {
     const { data } = await api.post("/auth/register", { email, password, username });
-    setUser(data);
-    return data;
+    if (data?.access_token) setAccessToken(data.access_token);
+    const me = await api.get("/auth/me");
+    setUser(me.data);
+    return me.data;
   };
 
   const logout = async () => {
-    try { await api.post("/auth/logout"); } catch { /* ignore */ }
+    setAccessToken("");
     setUser(false);
   };
 
