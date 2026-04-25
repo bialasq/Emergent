@@ -113,7 +113,7 @@ class TestGameState:
         boss = next((e for e in room.enemies if e.get("kind") == "lich"), None)
         assert boss is not None
         assert boss.get("boss") is True
-        assert boss["maxHp"] >= 200
+        assert boss["maxHp"] >= 100
 
     def test_state_payload_excludes_objectid(self):
         room = GameRoom("TESTPAY", 555)

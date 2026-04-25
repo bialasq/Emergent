@@ -1,3 +1,24 @@
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+backend/.env
+
+# Cloudflare Wrangler local state
+cf-worker/.wrangler/
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # IDE and editors

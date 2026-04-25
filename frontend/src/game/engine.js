@@ -7,16 +7,23 @@
 //  * Spell system: heal, light, haste, fireball, rope — see spells.js.
 //  * Multiplayer-ready: pass `onBroadcast`/`applyRemote` hooks and a `ghosts` map.
 
-import { generateDungeon, isWalkable } from "./dungeon";
+import { generateDungeon, generateWorldMap, isWalkable } from "./dungeon";
 import { computeFOV } from "./fov";
 import { MAP_W, MAP_H, T, TILE } from "./tiles";
 import {
   CLASSES, ENEMIES, ITEMS, spawnTableForDepth, weightedPick,
-  resolveAttack, XP_PER_LEVEL, rollUpgrades, applyUpgrade,
+  resolveAttack, XP_PER_LEVEL, rollUpgrades,
 } from "./entities";
 import { drawTile, drawPlayer, drawEnemy, drawItem, drawGhostPlayer } from "./sprites";
 import { SPELLS, SPELL_ORDER, applyMetaToStats, soulsFromRun } from "./spells";
 import { BIOMES, biomeForDepth } from "./biomes";
+import {
+  starterEquipment,
+  sumEquipmentStats,
+  instantiateGear,
+  randomLootGearId,
+  canEquipOffhand,
+} from "./equipment";
 
 export class Game {
   constructor({
@@ -42,52 +49,66 @@ export class Game {
     this.onLevelUp = onLevelUp || (() => {});
     this.onBroadcast = onBroadcast || null;
     this.coop = coop;
+    this.meta = meta;
+    // HUD bottom tab: false = chat, true = pack
+    this.inventoryOpen = false;
+    /** Cumulative bonuses from level-up picks (recomputed with gear) */
+    this._levelBonus = { maxHp: 0, maxMp: 0, atk: 0, def: 0, crit: 0, dmgBonus: 0, range: 0, dodge: 0 };
 
     this.tileSize = TILE;
     this.viewW = 0; this.viewH = 0;
     this.cameraX = 0; this.cameraY = 0;
 
     this.depth = 0;
-    this.maxDepth = 6;
+    // World map with cities (single plane)
+    this.worldMode = true;
+    this.maxDepth = 1;
     this.turn = 0;
     this.kills = 0;
     this.score = 0;
     this.startedAt = Date.now();
 
     const cls = CLASSES[classKey];
-    const { stats: metaStats } = applyMetaToStats({}, meta);
+    const mageDefaults = classKey === "mage"
+      ? ["death_wave", "energy_wave", "inferno_orb", "death_nova"]
+      : [];
+
     this.player = {
       cls: classKey,
       name: this.characterName,
       x: 0, y: 0, rx: 0, ry: 0,
-      hp: cls.stats.maxHp + (metaStats.maxHp || 0),
-      maxHp: cls.stats.maxHp + (metaStats.maxHp || 0),
-      mp: cls.stats.maxMp + (metaStats.maxMp || 0),
-      maxMp: cls.stats.maxMp + (metaStats.maxMp || 0),
-      atk: cls.stats.atk + (metaStats.atk || 0),
-      def: cls.stats.def + (metaStats.def || 0),
-      crit: cls.stats.crit, range: cls.stats.range,
-      dmgDice: cls.stats.dmgDice,
+      hp: 1,
+      maxHp: 1,
+      mp: 0,
+      maxMp: 0,
+      atk: 0,
+      def: 0,
+      crit: cls.stats.crit,
+      range: cls.stats.range,
+      dmgDice: [...cls.stats.dmgDice],
       dmgBonus: 0,
       level: 1, xp: 0, nextXp: XP_PER_LEVEL(1),
       gold: 0,
       regen: false, regenTick: 0,
       dodge: 0,
       inv: [],
+      gearBag: [],
+      equipment: starterEquipment(classKey),
       flash: 0,
-      // spells
-      unlockedSpells,
+      unlockedSpells: Array.from(new Set([...(unlockedSpells || []), ...mageDefaults])),
       spellState: {
         lightTurns: 0,
         hasteTurns: 0,
       },
-      // action budget (extra actions at higher level)
       actionsThisTurn: 0,
     };
+    this.recalcPlayerStats(true);
     for (let i = 0; i < startPotions; i++) this.player.inv.push({ kind: "potion", amount: 18, name: "Health Potion" });
 
     this.enemies = [];
     this.items = [];
+    this.materials = null; // MAP_H x MAP_W material ids for rendering
+    this.zones = null;     // MAP_H x MAP_W strings (city names)
     this.damageNumbers = [];
     this.log = [];
     this.explored = new Set();
@@ -101,12 +122,17 @@ export class Game {
 
     this.handleKey = this.handleKey.bind(this);
     this.loop = this.loop.bind(this);
+    this.handleMouseDown = this.handleMouseDown.bind(this);
+    this.handleContextMenu = this.handleContextMenu.bind(this);
   }
 
   start() {
     this.enterFloor(1);
     this.running = true;
     window.addEventListener("keydown", this.handleKey);
+    // right click on enemy = attack
+    this.canvas.addEventListener("contextmenu", this.handleContextMenu);
+    this.canvas.addEventListener("mousedown", this.handleMouseDown);
     this.resize();
     requestAnimationFrame(this.loop);
     this.pushState();
@@ -116,6 +142,8 @@ export class Game {
   stop() {
     this.running = false;
     window.removeEventListener("keydown", this.handleKey);
+    this.canvas.removeEventListener("contextmenu", this.handleContextMenu);
+    this.canvas.removeEventListener("mousedown", this.handleMouseDown);
   }
 
   resize() {
@@ -144,6 +172,136 @@ export class Game {
     return e;
   }
 
+  /** Merge class + meta progression + level-up bonuses + worn gear into combat stats */
+  recalcPlayerStats(fullHeal = false) {
+    const clsStats = CLASSES[this.classKey].stats;
+    const meta = applyMetaToStats({}, this.meta).stats;
+    const lv = this._levelBonus;
+    const g = sumEquipmentStats(this.player.equipment);
+    const prevHp = fullHeal ? this.player.maxHp : this.player.hp;
+    const prevMp = this.player.mp;
+
+    this.player.maxHp = clsStats.maxHp + (meta.maxHp || 0) + (lv.maxHp || 0) + g.maxHp;
+    this.player.maxMp = clsStats.maxMp + (meta.maxMp || 0) + (lv.maxMp || 0) + g.maxMp;
+    this.player.atk = clsStats.atk + (meta.atk || 0) + (lv.atk || 0) + g.atk;
+    this.player.def = clsStats.def + (meta.def || 0) + (lv.def || 0) + g.def;
+    this.player.crit = clsStats.crit + (lv.crit || 0) + g.crit;
+    this.player.dodge = (lv.dodge || 0) + (g.dodge || 0);
+    this.player.dmgBonus = (lv.dmgBonus || 0) + g.dmgBonus;
+    this.player.range = clsStats.range + (lv.range || 0) + g.range;
+    this.player.dmgDice = [...clsStats.dmgDice];
+
+    if (fullHeal) {
+      this.player.hp = this.player.maxHp;
+      this.player.mp = this.player.maxMp;
+    } else {
+      this.player.hp = Math.min(this.player.maxHp, Math.max(1, prevHp));
+      this.player.mp = Math.min(this.player.maxMp, Math.max(0, prevMp));
+    }
+  }
+
+  toggleInventory() {
+    this.inventoryOpen = !this.inventoryOpen;
+    this.pushState();
+    this.dirty = true;
+  }
+
+  setHudTab(tab) {
+    const next = tab === "pack";
+    if (this.inventoryOpen === next) return;
+    this.inventoryOpen = next;
+    this.pushState();
+    this.dirty = true;
+  }
+
+  equipFromBag(index) {
+    const inst = this.player.gearBag[index];
+    if (!inst) return;
+    if (inst.cls !== this.classKey) return;
+    if (inst.slot === "offhand" && !canEquipOffhand(this.classKey)) return;
+    if (inst.slot === "offhand" && this.player.equipment.weapon?.twoHanded) {
+      this.logMsg("Stow your two-handed weapon before raising a shield or tome.", "bump");
+      return;
+    }
+    const slot =
+      inst.slot === "amulet"
+        ? (!this.player.equipment.amulet1 ? "amulet1" : !this.player.equipment.amulet2 ? "amulet2" : "amulet1")
+        : inst.slot;
+    const current = this.player.equipment[slot];
+    const needsOff = inst.slot === "weapon" && inst.twoHanded && this.player.equipment.offhand;
+    const extra = (current ? 1 : 0) + (needsOff ? 1 : 0);
+    if (this.player.gearBag.length - 1 + extra > 24) {
+      this.logMsg("Pack full.", "bump");
+      return;
+    }
+    if (needsOff) {
+      this.player.gearBag.push(this.player.equipment.offhand);
+      this.player.equipment.offhand = null;
+    }
+    this.player.gearBag.splice(index, 1);
+    this.player.equipment[slot] = inst;
+    if (current) this.player.gearBag.push(current);
+    this.recalcPlayerStats(false);
+    this.logMsg(`Equipped ${inst.name}.`, "loot");
+    this.pushState();
+    this.dirty = true;
+  }
+
+  unequipSlot(slot) {
+    const piece = this.player.equipment[slot];
+    if (!piece) return;
+    if (this.player.gearBag.length >= 24) {
+      this.logMsg("Pack full — cannot remove.", "bump");
+      return;
+    }
+    this.player.equipment[slot] = null;
+    this.player.gearBag.push(piece);
+    this.recalcPlayerStats(false);
+    this.logMsg(`Stowed ${piece.name}.`, "info");
+    this.pushState();
+    this.dirty = true;
+  }
+
+  /** @returns {boolean} false if item must stay on the ground */
+  tryPickupOrEquip(inst) {
+    if (!inst) return false;
+    if (inst.cls !== this.classKey) {
+      if (this.player.gearBag.length >= 24) return false;
+      this.player.gearBag.push(inst);
+      this.logMsg(`${inst.name} — not your calling. Stowed for later trade.`, "info");
+      return true;
+    }
+    if (inst.slot === "offhand" && !canEquipOffhand(this.classKey)) {
+      if (this.player.gearBag.length >= 24) return false;
+      this.player.gearBag.push(inst);
+      return true;
+    }
+    if (inst.slot === "offhand" && this.player.equipment.weapon?.twoHanded) {
+      this.logMsg("Your weapon demands both hands — stow it to use a shield or tome.", "bump");
+      return false;
+    }
+    const slot =
+      inst.slot === "amulet"
+        ? (!this.player.equipment.amulet1 ? "amulet1" : !this.player.equipment.amulet2 ? "amulet2" : "amulet1")
+        : inst.slot;
+    const cur = this.player.equipment[slot];
+    const needsOff = inst.slot === "weapon" && inst.twoHanded && this.player.equipment.offhand;
+    const extra = (cur ? 1 : 0) + (needsOff ? 1 : 0);
+    if (this.player.gearBag.length + extra > 24) {
+      this.logMsg("Pack full — cannot swap this relic.", "bump");
+      return false;
+    }
+    if (needsOff) {
+      this.player.gearBag.push(this.player.equipment.offhand);
+      this.player.equipment.offhand = null;
+    }
+    if (cur) this.player.gearBag.push(cur);
+    this.player.equipment[slot] = inst;
+    this.recalcPlayerStats(false);
+    this.logMsg(`Equipped ${inst.name}.`, "loot");
+    return true;
+  }
+
   pushState() {
     this.onStateChange({
       player: { ...this.player },
@@ -156,33 +314,46 @@ export class Game {
       startedAt: this.startedAt,
       extraActions: this.extraActionsByLevel,
       fovRadius: this.fovRadius,
+      inventoryOpen: this.inventoryOpen,
     });
   }
 
   enterFloor(depth) {
     this.depth = depth;
-    const { map, rooms, start, exit, rng } = generateDungeon(this.seed, depth);
+    const gen = this.worldMode ? generateWorldMap(this.seed) : generateDungeon(this.seed, depth);
+    const { map, start, exit, rng } = gen;
+    const rooms = gen.rooms || [];
     this.map = map;
     this.rooms = rooms;
     this.exit = exit;
     this.floorRng = rng;
+    this.materials = gen.materials || null;
+    this.zones = gen.zones || null;
 
     this.player.x = start.x; this.player.y = start.y;
     this.player.rx = start.x; this.player.ry = start.y;
 
     // populate enemies scaled for larger map
     this.enemies = [];
-    const table = spawnTableForDepth(depth);
     const enemyCount = Math.floor((6 + depth * 2) * 6); // ~6x vs small map
     let attempts = 0;
     while (this.enemies.length < enemyCount && attempts < enemyCount * 4) {
       attempts++;
-      const room = rooms[rng.int(0, rooms.length - 1)];
-      if (room === rooms[0]) continue;
-      const x = room.x + rng.int(1, room.w - 2);
-      const y = room.y + rng.int(1, room.h - 2);
+      let x, y;
+      if (this.worldMode) {
+        x = rng.int(2, MAP_W - 3);
+        y = rng.int(2, MAP_H - 3);
+      } else {
+        const room = rooms[rng.int(0, rooms.length - 1)];
+        if (room === rooms[0]) continue;
+        x = room.x + rng.int(1, room.w - 2);
+        y = room.y + rng.int(1, room.h - 2);
+      }
       if (!isWalkable(map, x, y)) continue;
       if (this.enemies.some(e => e.x === x && e.y === y)) continue;
+      const zone = this.zones ? this.zones[y]?.[x] : null;
+      const zDepth = zone === "Serva" ? 1 : zone === "Defend" ? 3 : zone === "Castle Of Knighthood" ? 5 : depth;
+      const table = spawnTableForDepth(zDepth);
       const kind = weightedPick(rng, table);
       const base = ENEMIES[kind];
       this.enemies.push({
@@ -195,7 +366,7 @@ export class Game {
       });
     }
 
-    if (depth === this.maxDepth) {
+    if (!this.worldMode && depth === this.maxDepth) {
       // Remove stairs on boss floor — only boss kill leads to victory
       this.map[exit.y][exit.x] = T.FLOOR;
       const bossRoom = rooms[rooms.length - 1];
@@ -215,9 +386,15 @@ export class Game {
     attempts = 0;
     while (this.items.length < itemCount && attempts < itemCount * 3) {
       attempts++;
-      const room = rooms[rng.int(0, rooms.length - 1)];
-      const x = room.x + rng.int(1, room.w - 2);
-      const y = room.y + rng.int(1, room.h - 2);
+      let x, y;
+      if (this.worldMode) {
+        x = rng.int(2, MAP_W - 3);
+        y = rng.int(2, MAP_H - 3);
+      } else {
+        const room = rooms[rng.int(0, rooms.length - 1)];
+        x = room.x + rng.int(1, room.w - 2);
+        y = room.y + rng.int(1, room.h - 2);
+      }
       if (!isWalkable(map, x, y)) continue;
       if (this.items.some(i => i.x === x && i.y === y)) continue;
       const kind = itemKeys[rng.int(0, itemKeys.length - 1)];
@@ -225,9 +402,38 @@ export class Game {
       this.items.push({ kind, x, y, amount, name: ITEMS[kind].name });
     }
 
+    let gearDrops = 2 + rng.int(0, 2);
+    while (gearDrops-- > 0) {
+      const gid = randomLootGearId(rng, this.classKey, depth);
+      if (!gid) continue;
+      let gTry = 0;
+      while (gTry < 80) {
+        gTry++;
+        let x, y;
+        if (this.worldMode) {
+          x = rng.int(2, MAP_W - 3);
+          y = rng.int(2, MAP_H - 3);
+        } else {
+          const room = rooms[rng.int(0, rooms.length - 1)];
+          x = room.x + rng.int(1, room.w - 2);
+          y = room.y + rng.int(1, room.h - 2);
+        }
+        if (!isWalkable(map, x, y)) continue;
+        if (this.items.some(i => i.x === x && i.y === y)) continue;
+        const inst = instantiateGear(gid);
+        this.items.push({ kind: "gear", gearId: gid, x, y, name: inst.name, inst });
+        break;
+      }
+    }
+
     this.explored = new Set();
     this.updateFOV();
-    this.logMsg(`You descend into floor ${depth}. ${rooms.length} chambers echo.`);
+    if (this.worldMode) {
+      const cities = (gen.cities || []).map(c => c.name).join(", ");
+      this.logMsg(`World map loaded — cities: ${cities}.`, "info");
+    } else {
+      this.logMsg(`You descend into floor ${depth}. ${rooms.length} chambers echo.`);
+    }
     this.dirty = true;
   }
 
@@ -256,6 +462,12 @@ export class Game {
     }
     if (this.paused) return;
 
+    if (k === "i") {
+      this.toggleInventory();
+      e.preventDefault();
+      return;
+    }
+
     // Spell hotkeys
     for (const id of SPELL_ORDER) {
       if (SPELLS[id].hotkey === k) {
@@ -278,6 +490,24 @@ export class Game {
       default: return;
     }
     if (dx || dy) { this.doTurn(dx, dy); e.preventDefault(); }
+  }
+
+  handleContextMenu(e) {
+    // prevent the browser menu from stealing focus
+    e.preventDefault();
+  }
+
+  handleMouseDown(e) {
+    if (!this.running || this.paused || this.awaitingLevelUp) return;
+    // right click only
+    if (e.button !== 2) return;
+    e.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const tx = Math.floor((sx + this.cameraX) / this.tileSize);
+    const ty = Math.floor((sy + this.cameraY) / this.tileSize);
+    this.attackEnemyAt(tx, ty);
   }
 
   useItemByEffect(effect) {
@@ -352,6 +582,86 @@ export class Game {
         consumed = true;
         break;
       }
+      case "death_wave":
+      case "energy_wave":
+      case "inferno_orb":
+      case "death_nova": {
+        if (this.classKey !== "mage") {
+          this.logMsg(`Only a mage can weave ${SPELLS[id].name}.`, "bump");
+          return;
+        }
+        // target nearest visible enemy (except nova which centers on player)
+        let tgt = null, best = 9999;
+        for (const e of this.enemies) {
+          if (e.hp <= 0) continue;
+          if (!this.visible.has(e.x + "," + e.y)) continue;
+          const d = Math.abs(e.x - this.player.x) + Math.abs(e.y - this.player.y);
+          if (d < best) { best = d; tgt = e; }
+        }
+        if (id !== "death_nova" && !tgt) { this.logMsg(`No foes in sight.`, "bump"); return; }
+
+        const wave = (color, baseDmg) => {
+          const pts = this.bresenhamLine(this.player.x, this.player.y, tgt.x, tgt.y).slice(1, 9);
+          let hit = 0;
+          for (const [x, y] of pts) {
+            if (!isWalkable(this.map, x, y)) break;
+            const enemy = this.enemies.find(en => en.x === x && en.y === y && en.hp > 0);
+            if (enemy) {
+              const dmg = Math.max(2, baseDmg - (enemy.def || 0));
+              enemy.hp -= dmg; enemy.flash = 1;
+              this.pushDamage(enemy.x, enemy.y, String(dmg), color);
+              if (enemy.hp <= 0) this.killEnemy(enemy);
+              hit++;
+            }
+          }
+          return hit;
+        };
+
+        if (id === "death_wave") {
+          const hit = wave("#7ab8b8", 9 + Math.floor(this.player.level * 1.6));
+          this.logMsg(`Death Wave tears through ${hit || "no"} foe${hit === 1 ? "" : "s"}.`, "spell");
+          consumed = true;
+        } else if (id === "energy_wave") {
+          const hit = wave("#1fb3b3", 9 + Math.floor(this.player.level * 1.4));
+          this.logMsg(`Energy Wave surges forward.`, "spell");
+          consumed = true;
+        } else if (id === "inferno_orb") {
+          const r = 2; // diameter 4
+          let hit = 0;
+          for (const en of this.enemies) {
+            if (en.hp <= 0) continue;
+            const dx = en.x - tgt.x;
+            const dy = en.y - tgt.y;
+            if ((dx * dx + dy * dy) <= (r * r)) {
+              const dmg = Math.max(3, 12 + Math.floor(this.player.level * 2.2) - (en.def || 0));
+              en.hp -= dmg; en.flash = 1;
+              this.pushDamage(en.x, en.y, String(dmg), "#e05a1a");
+              if (en.hp <= 0) this.killEnemy(en);
+              hit++;
+            }
+          }
+          this.logMsg(`Inferno Orb detonates (${hit} hit).`, "spell");
+          consumed = true;
+        } else if (id === "death_nova") {
+          const r = 5;
+          let hit = 0;
+          for (const en of this.enemies) {
+            if (en.hp <= 0) continue;
+            const dx = en.x - this.player.x;
+            const dy = en.y - this.player.y;
+            if ((dx * dx + dy * dy) <= (r * r)) {
+              const dmg = Math.max(4, 14 + Math.floor(this.player.level * 2.8) - (en.def || 0));
+              en.hp -= dmg; en.flash = 1;
+              this.pushDamage(en.x, en.y, String(dmg), "#b8860b");
+              if (en.hp <= 0) this.killEnemy(en);
+              hit++;
+            }
+          }
+          this.logMsg(`Death Nova erupts around you (${hit} hit).`, "spell");
+          consumed = true;
+        }
+        break;
+      }
       case "rope": {
         if (!this.exit) return;
         const reach = this.explored.has(this.exit.x + "," + this.exit.y);
@@ -373,6 +683,90 @@ export class Game {
       this.maybeAutoDescend();
     }
     if (this.onBroadcast) this.onBroadcast({ type: "spell", spell: id, x: this.player.x, y: this.player.y });
+  }
+
+  bresenhamLine(x0, y0, x1, y1) {
+    const pts = [];
+    let dx = Math.abs(x1 - x0);
+    let dy = Math.abs(y1 - y0);
+    let sx = x0 < x1 ? 1 : -1;
+    let sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+    let x = x0;
+    let y = y0;
+    while (true) {
+      pts.push([x, y]);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x += sx; }
+      if (e2 < dx) { err += dx; y += sy; }
+      if (pts.length > 64) break;
+    }
+    return pts;
+  }
+
+  attackEnemyAt(tx, ty) {
+    const enemy = this.enemies.find(e => e.x === tx && e.y === ty && e.hp > 0);
+    if (!enemy) return;
+    if (!this.visible.has(tx + "," + ty)) return;
+
+    const dx = tx - this.player.x;
+    const dy = ty - this.player.y;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    const cheb = Math.max(adx, ady);
+
+    // melee if adjacent
+    if (cheb <= 1) {
+      const result = resolveAttack(this.floorRng, {
+        dmg: this.player.dmgDice,
+        bonus: this.player.dmgBonus + (this.player.atk - CLASSES[this.classKey].stats.atk),
+        crit: this.player.crit,
+      }, enemy);
+      enemy.hp -= result.dmg; enemy.flash = 1;
+      this.pushDamage(enemy.x, enemy.y, String(result.dmg) + (result.crit ? "!" : ""), result.crit ? "#f0d89a" : "#e0d3c1");
+      this.logMsg(`You strike ${enemy.name} for ${result.dmg}${result.crit ? " (crit!)" : ""}.`, "hit");
+      if (enemy.hp <= 0) this.killEnemy(enemy);
+      this.doTurn(0, 0); // consume action / advance turn flow
+      return;
+    }
+
+    // ranger ranged: 1–4 tiles, line must be clear through walkable tiles
+    if (this.classKey === "ranger") {
+      if (cheb < 1 || cheb > 4) { this.logMsg("Out of bow range (1–4).", "bump"); return; }
+      const line = this.bresenhamLine(this.player.x, this.player.y, tx, ty).slice(1);
+      for (const [x, y] of line) {
+        if (x === tx && y === ty) break;
+        if (!isWalkable(this.map, x, y)) { this.logMsg("No clear shot.", "bump"); return; }
+      }
+      const bonus = this.player.dmgBonus + (this.player.atk - CLASSES[this.classKey].stats.atk);
+      const result = resolveAttack(this.floorRng, { dmg: this.player.dmgDice, bonus, crit: this.player.crit }, enemy);
+      enemy.hp -= result.dmg; enemy.flash = 1;
+      this.pushDamage(enemy.x, enemy.y, String(result.dmg) + (result.crit ? "!" : ""), "#7bc96f");
+      this.logMsg(`Your shaft finds ${enemy.name} for ${result.dmg}.`, "hit");
+      if (enemy.hp <= 0) this.killEnemy(enemy);
+      this.doTurn(0, 0);
+      return;
+    }
+
+    // mage basic bolt (not a spell) — click-cast if MP allows
+    if (this.classKey === "mage") {
+      if (cheb < 1 || cheb > this.player.range) { this.logMsg("Out of arcane range.", "bump"); return; }
+      if (this.player.mp < 3) { this.logMsg("Not enough mana for a bolt.", "bump"); return; }
+      const line = this.bresenhamLine(this.player.x, this.player.y, tx, ty).slice(1);
+      for (const [x, y] of line) {
+        if (x === tx && y === ty) break;
+        if (!isWalkable(this.map, x, y)) { this.logMsg("The stone drinks the flame.", "bump"); return; }
+      }
+      const bonus = this.player.dmgBonus + 1;
+      const result = resolveAttack(this.floorRng, { dmg: this.player.dmgDice, bonus, crit: this.player.crit }, enemy);
+      enemy.hp -= result.dmg; enemy.flash = 1;
+      this.player.mp -= 3;
+      this.pushDamage(enemy.x, enemy.y, String(result.dmg) + (result.crit ? "!" : ""), "#1fb3b3");
+      this.logMsg(`Arcane flame rips at ${enemy.name} for ${result.dmg}.`, "spell");
+      if (enemy.hp <= 0) this.killEnemy(enemy);
+      this.doTurn(0, 0);
+    }
   }
 
   // ------------- turn logic -----------------
@@ -410,6 +804,7 @@ export class Game {
   }
 
   maybeAutoDescend() {
+    if (this.worldMode) return;
     if (this.map[this.player.y][this.player.x] === T.STAIRS_DOWN) {
       if (this.depth < this.maxDepth) {
         this.logMsg(`Stone gives way — you descend deeper.`, "info");
@@ -435,8 +830,17 @@ export class Game {
       if (adj.hp <= 0) this.killEnemy(adj);
       return;
     }
-    // mage auto-cast
-    if (this.classKey === "mage" && this.player.mp >= 3) {
+    // mage: mana bolt | ranger: physical shot (no MP)
+    const mageBolt = this.classKey === "mage" && this.player.mp >= 3;
+    const rangerShot = this.classKey === "ranger";
+    if (mageBolt || rangerShot) {
+      const bonus =
+        this.classKey === "mage"
+          ? this.player.dmgBonus + 1
+          : this.player.dmgBonus + (this.player.atk - CLASSES[this.classKey].stats.atk);
+      const dmgColor = this.classKey === "mage" ? "#1fb3b3" : "#7bc96f";
+      const logKind = this.classKey === "mage" ? "spell" : "hit";
+      const logVerb = this.classKey === "mage" ? "Arcane flame rips" : "Your shaft finds";
       for (let r = 1; r <= this.player.range; r++) {
         const tx = this.player.x + dx * r;
         const ty = this.player.y + dy * r;
@@ -444,12 +848,12 @@ export class Game {
         const tgt = this.enemies.find(e => e.x === tx && e.y === ty && e.hp > 0);
         if (tgt) {
           const result = resolveAttack(this.floorRng, {
-            dmg: this.player.dmgDice, bonus: this.player.dmgBonus + 1, crit: this.player.crit,
+            dmg: this.player.dmgDice, bonus, crit: this.player.crit,
           }, tgt);
           tgt.hp -= result.dmg; tgt.flash = 1;
-          this.player.mp -= 3;
-          this.pushDamage(tgt.x, tgt.y, String(result.dmg) + (result.crit ? "!" : ""), "#1fb3b3");
-          this.logMsg(`Arcane flame rips at ${tgt.name} for ${result.dmg}.`, "spell");
+          if (this.classKey === "mage") this.player.mp -= 3;
+          this.pushDamage(tgt.x, tgt.y, String(result.dmg) + (result.crit ? "!" : ""), dmgColor);
+          this.logMsg(`${logVerb} at ${tgt.name} for ${result.dmg}.`, logKind);
           if (tgt.hp <= 0) this.killEnemy(tgt);
           return;
         }
@@ -469,9 +873,19 @@ export class Game {
     this.player.xp += e.xp;
     this.score += e.xp * (1 + this.depth);
     this.logMsg(`${e.name} falls to silence. +${e.xp} XP.`, "kill");
-    if (this.floorRng.chance(0.3)) {
+    if (this.floorRng.chance(0.2)) {
+      const gid = randomLootGearId(this.floorRng, this.classKey, this.depth);
+      if (gid) {
+        const inst = instantiateGear(gid);
+        this.items.push({ kind: "gear", gearId: gid, x: e.x, y: e.y, name: inst.name, inst });
+        this.logMsg(`${e.name} dropped ${inst.name}.`, "loot");
+      }
+    } else if (this.floorRng.chance(0.28)) {
       const kind = this.floorRng.pick(["potion", "mana", "gold"]);
-      this.items.push({ kind, x: e.x, y: e.y, amount: kind === "gold" ? this.floorRng.int(5, 15) : ITEMS[kind].value, name: ITEMS[kind].name });
+      const amount = kind === "gold" ? this.floorRng.int(5, 15) : ITEMS[kind].value;
+      const name = ITEMS[kind].name;
+      this.items.push({ kind, x: e.x, y: e.y, amount, name });
+      this.logMsg(`${e.name} dropped ${name}.`, "loot");
     }
     this.enemies = this.enemies.filter(en => en.hp > 0);
     if (e.boss) {
@@ -490,7 +904,21 @@ export class Game {
   }
 
   applyUpgrade(upg) {
-    applyUpgrade(this.player, upg);
+    const lv = this._levelBonus;
+    switch (upg.id) {
+      case "hp_up": lv.maxHp += 10; break;
+      case "mp_up": lv.maxMp += 8; break;
+      case "atk_up": lv.atk += 2; lv.dmgBonus += 1; break;
+      case "def_up": lv.def += 2; break;
+      case "crit_up": lv.crit += 0.06; break;
+      case "range_up": lv.range += 1; break;
+      case "regen": this.player.regen = true; break;
+      case "dodge": lv.dodge += 0.15; break;
+      default: break;
+    }
+    this.recalcPlayerStats(false);
+    if (upg.id === "hp_up") this.player.hp = this.player.maxHp;
+    if (upg.id === "mp_up") this.player.mp = this.player.maxMp;
     this.logMsg(`You attune to ${upg.name}.`, "levelup");
     this.awaitingLevelUp = false;
     this.pushState();
@@ -560,6 +988,11 @@ export class Game {
         this.awaitingLevelUp = true;
         this.onLevelUp(rollUpgrades(this.floorRng, 3));
       }
+    } else if (it.kind === "gear") {
+      const inst = it.inst || instantiateGear(it.gearId);
+      if (inst && !this.tryPickupOrEquip(inst)) {
+        this.items.push(it);
+      }
     } else {
       this.player.inv.push({ kind: it.kind, amount: it.amount, name: it.name });
       this.logMsg(`Picked up ${it.name}.`, "loot");
@@ -628,7 +1061,8 @@ export class Game {
   render() {
     const ctx = this.ctx;
     const s = this.tileSize;
-    ctx.fillStyle = "#050404";
+    const biome = BIOMES[biomeForDepth(this.depth)] || BIOMES.stone;
+    ctx.fillStyle = biome.bg;
     ctx.fillRect(0, 0, this.viewW, this.viewH);
 
     // camera follows player (render-space)
@@ -642,13 +1076,24 @@ export class Game {
     const startY = Math.max(0, Math.floor(this.cameraY / s) - 1);
     const endY = Math.min(MAP_H, Math.ceil((this.cameraY + this.viewH) / s) + 1);
 
+    const biomeKey = biomeForDepth(this.depth);
     // draw tiles (on-the-fly; viewport ~ 25×17 tiles = 425 draws)
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
         const key = x + "," + y;
         const exp = this.explored.has(key);
         if (!exp) continue;
-        drawTile(ctx, this.map[y][x], x * s - this.cameraX, y * s - this.cameraY, s, (x * 13 + y * 7) | 0);
+        const mat = this.materials ? this.materials[y]?.[x] : null;
+        drawTile(
+          ctx,
+          this.map[y][x],
+          x * s - this.cameraX,
+          y * s - this.cameraY,
+          s,
+          (x * 13 + y * 7) | 0,
+          biomeKey,
+          mat,
+        );
       }
     }
 
@@ -667,7 +1112,7 @@ export class Game {
     // items
     for (const it of this.items) {
       if (!this.visible.has(it.x + "," + it.y)) continue;
-      drawItem(ctx, it.kind, it.x * s - this.cameraX, it.y * s - this.cameraY, s);
+      drawItem(ctx, it, it.x * s - this.cameraX, it.y * s - this.cameraY, s);
     }
 
     // enemies

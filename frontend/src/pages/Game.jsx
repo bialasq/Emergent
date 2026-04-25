@@ -84,6 +84,7 @@ export default function GamePage() {
             kills: y.kills,
             score: y.score,
             extraActions: y.extraActions,
+            waitingForAllies: !!s.waitingForAllies,
             log: s.log.map((l) => ({ msg: l.msg, kind: "info" })),
           });
         },
@@ -253,7 +254,8 @@ export default function GamePage() {
           </div>
         </div>
 
-        <div className="grid lg:grid-cols-[1fr_320px] gap-4">
+        {/* HUD is always a right sidebar (no responsive stacking) */}
+        <div className="grid grid-cols-[1fr_320px] gap-4">
           <div className="relative dungeon-card p-0 overflow-hidden" style={{ aspectRatio: "16 / 10" }}>
             <span className="rune-corner top-0 left-0 border-t-2 border-l-2 border-r-0 border-b-0" />
             <span className="rune-corner top-0 right-0 border-t-2 border-r-2 border-l-0 border-b-0" />
@@ -273,6 +275,15 @@ export default function GamePage() {
           </div>
 
           <div className="flex flex-col gap-3">
+            <div className="dungeon-card p-4">
+              <HUD
+                state={hudState}
+                souls={souls}
+                onEquipFromBag={!isCoop ? (i) => gameRef.current?.equipFromBag(i) : undefined}
+                onUnequipSlot={!isCoop ? (slot) => gameRef.current?.unequipSlot(slot) : undefined}
+                onSelectHudTab={!isCoop ? (tab) => gameRef.current?.setHudTab(tab) : undefined}
+              />
+            </div>
             <div className="dungeon-card p-3">
               <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted mb-2">
                 Charted Echoes
@@ -284,9 +295,6 @@ export default function GamePage() {
                 className="pixelated w-full border border-dungeon-border bg-dungeon-ink"
                 data-testid="game-minimap"
               />
-            </div>
-            <div className="dungeon-card p-4">
-              <HUD state={hudState} souls={souls} />
             </div>
           </div>
         </div>
@@ -302,6 +310,7 @@ export default function GamePage() {
           <span>Q — Potion</span>
           <span>R — Mana</span>
           {!isCoop && <span>P/Esc — Pause</span>}
+          {!isCoop && <span>I — Torba (zakładka)</span>}
         </div>
       </div>
 

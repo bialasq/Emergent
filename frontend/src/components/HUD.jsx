@@ -1,18 +1,29 @@
 import React from "react";
 import { SPELLS, SPELL_ORDER } from "../game/spells";
+import { GEAR_SLOTS, slotDisplayName, canEquipOffhand, offhandLabel } from "../game/equipment";
 
-export default function HUD({ state, souls = 0 }) {
+export default function HUD({ state, souls = 0, onEquipFromBag, onUnequipSlot, onSelectHudTab }) {
   if (!state) return null;
   const p = state.player;
+  const hasEquipment = p.equipment && typeof p.equipment === "object";
   const hpPct = Math.max(0, (p.hp / p.maxHp) * 100);
   const mpPct = Math.max(0, (p.mp / p.maxMp) * 100);
   const xpPct = Math.max(0, (p.xp / p.nextXp) * 100);
+  const tab = state.inventoryOpen ? "pack" : "chat";
 
   const potions = p.inv.filter((i) => i.kind === "potion").length;
   const manas = p.inv.filter((i) => i.kind === "mana").length;
 
   return (
     <div className="w-full text-dungeon-parchment font-body" data-testid="hud">
+      {state.waitingForAllies && (
+        <div
+          className="mb-2 text-xs font-sub text-dungeon-teal border border-dungeon-teal/40 bg-dungeon-teal/10 px-2 py-1.5 rounded-sm"
+          data-testid="hud-waiting-allies"
+        >
+          Awaiting fellow echoes — foes stir only after everyone finishes their moves.
+        </div>
+      )}
       <div className="flex items-center gap-3 mb-2">
         <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted">{p.cls}</div>
         <div className="text-dungeon-parchment font-sub">{p.name}</div>
@@ -61,6 +72,56 @@ export default function HUD({ state, souls = 0 }) {
           <div className="text-dungeon-parchment text-lg" data-testid="hud-speed">+{state.extraActions || 0}</div>
         </div>
       </div>
+
+      {hasEquipment && (
+        <div className="mt-4" data-testid="hud-equipment">
+          <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted mb-2 flex justify-between items-center">
+            <span>Relics / Arms</span>
+            <span className="text-[10px] font-sub normal-case text-dungeon-muted">I — pack</span>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+            {GEAR_SLOTS.map((slot) => {
+              const piece = p.equipment[slot];
+              const offDisabled = slot === "offhand" && !canEquipOffhand(p.cls);
+              const label =
+                slot === "offhand" ? offhandLabel(p.cls) : slotDisplayName(slot, p.cls);
+              return (
+                <div
+                  key={slot}
+                  className={`dungeon-card p-1.5 min-h-[52px] flex flex-col border ${
+                    offDisabled ? "opacity-40 border-dungeon-border" : "border-dungeon-border/80"
+                  }`}
+                  data-testid={`eq-slot-${slot}`}
+                >
+                  <div className="font-heading text-[9px] tracking-widest uppercase text-dungeon-muted truncate">
+                    {label}
+                  </div>
+                  {offDisabled ? (
+                    <div className="font-body text-dungeon-muted italic mt-0.5 leading-tight">Two-handed path</div>
+                  ) : piece ? (
+                    <>
+                      <div className="font-body text-dungeon-parchment leading-tight mt-0.5 flex-1 line-clamp-2">
+                        {piece.name}
+                      </div>
+                      {onUnequipSlot && (
+                        <button
+                          type="button"
+                          className="mt-1 text-[9px] font-sub text-dungeon-teal hover:underline self-start"
+                          onClick={() => onUnequipSlot(slot)}
+                        >
+                          Stow
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-dungeon-muted/60 mt-0.5">— empty —</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="mt-4">
         <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted mb-2 flex justify-between">
@@ -128,27 +189,81 @@ export default function HUD({ state, souls = 0 }) {
       </div>
 
       <div className="mt-4">
-        <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted mb-2">Echoes</div>
-        <div className="dungeon-card p-3 h-32 log-scroll overflow-y-auto text-xs leading-relaxed" data-testid="hud-log">
-          {state.log.map((l, i) => (
-            <div
-              key={i}
-              className={
-                l.kind === "dmg"
-                  ? "text-dungeon-blood/90"
-                  : l.kind === "heal"
-                  ? "text-dungeon-blood"
-                  : l.kind === "spell" || l.kind === "mana"
-                  ? "text-dungeon-teal"
-                  : l.kind === "levelup"
-                  ? "text-dungeon-gold"
-                  : "text-dungeon-parchment/80"
-              }
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-heading text-xs tracking-[0.25em] uppercase text-dungeon-muted">Panel</div>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className={`px-2 py-1 text-[10px] font-heading tracking-widest uppercase border ${
+                tab === "chat"
+                  ? "border-dungeon-teal/60 bg-dungeon-teal/10 text-dungeon-teal"
+                  : "border-dungeon-border/70 text-dungeon-muted hover:text-dungeon-parchment"
+              }`}
+              onClick={() => onSelectHudTab && onSelectHudTab("chat")}
             >
-              › {l.msg}
-            </div>
-          ))}
+              Chat
+            </button>
+            <button
+              type="button"
+              className={`px-2 py-1 text-[10px] font-heading tracking-widest uppercase border ${
+                tab === "pack"
+                  ? "border-dungeon-gold/60 bg-dungeon-gold/10 text-dungeon-gold"
+                  : "border-dungeon-border/70 text-dungeon-muted hover:text-dungeon-parchment"
+              }`}
+              onClick={() => onSelectHudTab && onSelectHudTab("pack")}
+            >
+              Ekwipunek
+            </button>
+          </div>
         </div>
+
+        {tab === "pack" ? (
+          <div className="dungeon-card p-3 h-32 overflow-y-auto text-xs leading-relaxed" data-testid="hud-gear-bag">
+            <div className="font-heading text-[10px] tracking-widest uppercase text-dungeon-muted mb-2">
+              Torba ({p.gearBag?.length || 0}/24)
+            </div>
+            {p.gearBag?.length > 0 && onEquipFromBag ? (
+              p.gearBag.map((g, i) => (
+                <div
+                  key={`${g.gearId}-${i}`}
+                  className="flex items-center justify-between gap-2 py-1 border-b border-dungeon-border/40 last:border-0"
+                >
+                  <span className="font-body text-[11px] text-dungeon-parchment truncate">{g.name}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 text-[10px] font-sub text-dungeon-gold hover:underline"
+                    onClick={() => onEquipFromBag(i)}
+                  >
+                    Załóż
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="text-dungeon-muted italic">— pusto —</div>
+            )}
+          </div>
+        ) : (
+          <div className="dungeon-card p-3 h-32 log-scroll overflow-y-auto text-xs leading-relaxed" data-testid="hud-log">
+            {state.log.map((l, i) => (
+              <div
+                key={i}
+                className={
+                  l.kind === "dmg"
+                    ? "text-dungeon-blood/90"
+                    : l.kind === "heal"
+                    ? "text-dungeon-blood"
+                    : l.kind === "spell" || l.kind === "mana"
+                    ? "text-dungeon-teal"
+                    : l.kind === "levelup" || l.kind === "loot"
+                    ? "text-dungeon-gold"
+                    : "text-dungeon-parchment/80"
+                }
+              >
+                › {l.msg}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

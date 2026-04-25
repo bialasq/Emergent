@@ -202,10 +202,21 @@ export class CoopRenderer {
     // other players (always drawn if same depth — server sends them)
     for (const op of (this.state.players || [])) {
       if (!op.alive) continue;
-      drawGhostPlayer(ctx, op.cls, op.name, op.x * s - cameraX, op.y * s - cameraY, s);
+      const ox = op.x * s - cameraX;
+      const oy = op.y * s - cameraY;
+      const maxHp = op.maxHp ?? 1;
+      const maxMp = op.maxMp ?? 1;
+      const barW = s - 8;
+      const barX = ox + 4;
+      const barY = oy - 20;
+      ctx.fillStyle = "#0a0807"; ctx.fillRect(barX - 1, barY - 1, barW + 2, 5);
+      ctx.fillStyle = "#8c1c13"; ctx.fillRect(barX, barY, (barW * (op.hp ?? maxHp)) / maxHp, 3);
+      ctx.fillStyle = "#0a0807"; ctx.fillRect(barX - 1, barY + 5 - 1, barW + 2, 5);
+      ctx.fillStyle = "#138c8c"; ctx.fillRect(barX, barY + 5, (barW * (op.mp ?? maxMp)) / maxMp, 3);
+      drawGhostPlayer(ctx, op.cls, op.name, ox, oy, s);
       ctx.font = "bold 12px Cinzel, serif"; ctx.textAlign = "center";
-      ctx.fillStyle = "#0a0807"; ctx.fillText(op.name || "?", op.x * s - cameraX + s / 2 + 1, op.y * s - cameraY - 8 + 1);
-      ctx.fillStyle = "#c8b79a"; ctx.fillText(op.name || "?", op.x * s - cameraX + s / 2, op.y * s - cameraY - 8);
+      ctx.fillStyle = "#0a0807"; ctx.fillText(op.name || "?", ox + s / 2 + 1, oy - 28 + 1);
+      ctx.fillStyle = "#c8b79a"; ctx.fillText(op.name || "?", ox + s / 2, oy - 28);
     }
     // me
     drawPlayer(ctx, me.cls, me.x * s - cameraX, me.y * s - cameraY, s, 0);

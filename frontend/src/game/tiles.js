@@ -9,6 +9,7 @@ export const T = {
   DOOR: 2,
   STAIRS_DOWN: 3,
   STAIRS_UP: 4,
+  WATER: 5,
 };
 
 export const COLORS = {

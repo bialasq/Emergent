@@ -1,0 +1,16 @@
+name = "dungeon-of-echoes-api"
+main = "src/index.js"
+compatibility_date = "2026-04-25"
+
+# Bindings (fill after `wrangler d1 create`)
+[[d1_databases]]
+binding = "DB"
+database_name = "dungeon_of_echoes"
+database_id = "REPLACE_ME"
+
+[vars]
+# Set via `wrangler secret put JWT_SECRET`
+COOKIE_SECURE = "true"
+COOKIE_SAMESITE = "Lax"
+COOKIE_DOMAIN = ""
+

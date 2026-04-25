@@ -19,7 +19,7 @@ MAP_H = 180
 T_WALL = 0
 T_FLOOR = 1
 T_STAIRS = 3
-MAX_DEPTH = 6
+MAX_DEPTH = 5  # MVP: 5 floors — deepest is boss arena
 
 # ---------- Class & enemy definitions (mirror entities.js / spells.js) ----------
 CLASSES: Dict[str, Dict[str, Any]] = {
@@ -38,7 +38,7 @@ ENEMIES: Dict[str, Dict[str, Any]] = {
     "troll":    {"name": "Troll",        "tier": 3, "hp": 32,  "atk": 8,  "def": 4, "xp": 28,  "dmg": (3, 8)},
     "golem":    {"name": "Stone Golem",  "tier": 4, "hp": 50,  "atk": 10, "def": 6, "xp": 45,  "dmg": (4, 10)},
     "wyvern":   {"name": "Wyvern",       "tier": 4, "hp": 55,  "atk": 12, "def": 3, "xp": 55,  "dmg": (5, 11)},
-    "lich":     {"name": "Echo Lich",    "tier": 5, "hp": 220, "atk": 14, "def": 5, "xp": 250, "dmg": (6, 14), "boss": True},
+    "lich":     {"name": "Echo Lich",    "tier": 5, "hp": 120, "atk": 14, "def": 5, "xp": 150, "dmg": (6, 14), "boss": True},
 }
 
 ITEMS: Dict[str, Dict[str, Any]] = {
@@ -269,6 +269,7 @@ class Player:
     score: int = 0
     alive: bool = True
     actions_this_turn: int = 0
+    round_done: bool = False  # coop: finished this slice; enemies act when all living are done
     last_seen_visible: Set[Tuple[int, int]] = field(default_factory=set)
     explored: Set[Tuple[int, int]] = field(default_factory=set)
 
@@ -378,6 +379,7 @@ class GameRoom:
             if not p.alive: continue
             p.x, p.y = self.start
             p.actions_this_turn = 0
+            p.round_done = False
             p.explored = set()
             self._update_fov(p)
         self._log(f"The crypt deepens — floor {depth}, {len(self.rooms)} chambers.")
@@ -391,6 +393,10 @@ class GameRoom:
         p = Player.make(pid, name, cls_key)
         p.x, p.y = self.start
         self.players[pid] = p
+        # Resync round flags so a new arrival does not desync enemy pacing
+        for op in self.players.values():
+            op.round_done = False
+            op.actions_this_turn = 0
         self._update_fov(p)
         self._log(f"{name} the {cls_key.title()} enters the crypt.")
         return p
@@ -400,6 +406,10 @@ class GameRoom:
             name = self.players[pid].name
             self.players.pop(pid)
             self._log(f"{name} departs the crypt.")
+            for op in self.players.values():
+                if op.alive:
+                    op.round_done = False
+                    op.actions_this_turn = 0
 
     # ---------- actions ----------
     def handle(self, pid: str, msg: dict):
@@ -566,16 +576,33 @@ class GameRoom:
         self._end_action(p)
 
     def _end_action(self, p: Player):
+        """Co-op: enemies advance only after every living player finishes their action slice."""
         p.actions_this_turn += 1
         allowed = 1 + p.extra_actions
-        if p.actions_this_turn >= allowed:
-            self._enemies_act()
-            p.actions_this_turn = 0
-            if p.light_turns > 0: p.light_turns -= 1
-            if p.haste_turns > 0: p.haste_turns -= 1
-            p.mp = min(p.max_mp, p.mp + 0.08)
-            self.turn += 1
-        self._update_fov(p)
+        if p.actions_this_turn < allowed:
+            self._update_fov(p)
+            return
+        p.actions_this_turn = 0
+        p.round_done = True
+        living = [x for x in self.players.values() if x.alive]
+        if not living:
+            return
+        if not all(x.round_done for x in living):
+            self._update_fov(p)
+            return
+        for x in living:
+            x.round_done = False
+        self._enemies_act()
+        living = [x for x in self.players.values() if x.alive]
+        for x in living:
+            if x.light_turns > 0:
+                x.light_turns -= 1
+            if x.haste_turns > 0:
+                x.haste_turns -= 1
+            x.mp = min(x.max_mp, x.mp + 0.08)
+        self.turn += 1
+        for x in living:
+            self._update_fov(x)
 
     def _update_fov(self, p: Player):
         vis = compute_fov(self.grid, p.x, p.y, p.fov_radius)
@@ -649,14 +676,22 @@ class GameRoom:
         others = []
         for p in self.players.values():
             if p.pid == pid: continue
-            others.append({"id": p.pid, "name": p.name, "cls": p.cls, "x": p.x, "y": p.y, "hp": p.hp, "maxHp": p.max_hp, "alive": p.alive})
+            others.append({
+                "id": p.pid, "name": p.name, "cls": p.cls, "x": p.x, "y": p.y,
+                "hp": p.hp, "maxHp": p.max_hp, "mp": p.mp, "maxMp": p.max_mp, "alive": p.alive,
+            })
         explored_list = list(me.explored)
         visible_list = list(vis)
+        living = [x for x in self.players.values() if x.alive]
+        waiting_for_allies = me.round_done and any(
+            not x.round_done for x in living if x.pid != pid
+        )
         return {
             "type": "state",
             "depth": self.depth,
             "turn": self.turn,
             "victory": self.victory,
+            "waitingForAllies": waiting_for_allies,
             "you": {
                 "id": me.pid, "name": me.name, "cls": me.cls,
                 "x": me.x, "y": me.y,

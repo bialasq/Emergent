@@ -11,8 +11,18 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await api.get("/auth/me");
       setUser(data);
-    } catch {
-      setUser(false);
+    } catch (err) {
+      if (err?.response?.status === 401) {
+        try {
+          await api.post("/auth/refresh");
+          const { data } = await api.get("/auth/me");
+          setUser(data);
+        } catch {
+          setUser(false);
+        }
+      } else {
+        setUser(false);
+      }
     } finally {
       setLoading(false);
     }

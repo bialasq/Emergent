@@ -12,6 +12,7 @@ import asyncio
 import zlib
 import bcrypt
 import jwt
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any
 
@@ -29,6 +30,15 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 60 * 12
 REFRESH_TOKEN_DAYS = 30
+
+COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN") or None
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true", "yes", "on")
+COOKIE_SAMESITE = (os.environ.get("COOKIE_SAMESITE") or "lax").lower()
+if COOKIE_SAMESITE not in ("lax", "strict", "none"):
+    COOKIE_SAMESITE = "lax"
+
+CSRF_COOKIE = "csrf_token"
+CSRF_HEADER = "x-csrf-token"
 
 app = FastAPI(title="Dungeon of Echoes API")
 api_router = APIRouter(prefix="/api")
@@ -55,10 +65,49 @@ def create_token(user_id: str, email: str, kind: str) -> str:
 
 
 def set_auth_cookies(response: Response, access: str, refresh: str):
-    response.set_cookie("access_token", access, httponly=True, secure=True,
-        samesite="none", max_age=ACCESS_TOKEN_MINUTES * 60, path="/")
-    response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
-        samesite="none", max_age=REFRESH_TOKEN_DAYS * 86400, path="/")
+    response.set_cookie(
+        "access_token",
+        access,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=ACCESS_TOKEN_MINUTES * 60,
+        path="/",
+        domain=COOKIE_DOMAIN,
+    )
+    response.set_cookie(
+        "refresh_token",
+        refresh,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=REFRESH_TOKEN_DAYS * 86400,
+        path="/",
+        domain=COOKIE_DOMAIN,
+    )
+
+
+def set_csrf_cookie(response: Response):
+    token = secrets.token_urlsafe(24)
+    response.set_cookie(
+        CSRF_COOKIE,
+        token,
+        httponly=False,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=REFRESH_TOKEN_DAYS * 86400,
+        path="/",
+        domain=COOKIE_DOMAIN,
+    )
+    return token
+
+
+def require_csrf(request: Request):
+    # Only for cookie-auth state-changing requests.
+    c = request.cookies.get(CSRF_COOKIE)
+    h = request.headers.get(CSRF_HEADER)
+    if not c or not h or c != h:
+        raise HTTPException(status_code=403, detail="CSRF check failed")
 
 
 async def get_current_user(request: Request) -> dict:
@@ -114,7 +163,7 @@ class UserOut(BaseModel):
 
 class RunSubmit(BaseModel):
     seed: int
-    character_class: Literal["warrior", "mage"]
+    character_class: Literal["warrior", "mage", "rogue", "ranger"]
     character_name: str = Field(min_length=1, max_length=32)
     depth: int = Field(ge=1)
     score: int = Field(ge=0)
@@ -173,6 +222,7 @@ async def register(body: RegisterRequest, response: Response):
     access = create_token(user_id, email, "access")
     refresh = create_token(user_id, email, "refresh")
     set_auth_cookies(response, access, refresh)
+    set_csrf_cookie(response)
     return {
         "id": user_id, "email": email, "username": body.username.strip(),
         "created_at": doc["created_at"], "souls": 0, "meta": {},
@@ -206,6 +256,7 @@ async def login(body: LoginRequest, request: Request, response: Response):
     access = create_token(user["id"], user["email"], "access")
     refresh = create_token(user["id"], user["email"], "refresh")
     set_auth_cookies(response, access, refresh)
+    set_csrf_cookie(response)
     return {
         "id": user["id"], "email": user["email"], "username": user["username"],
         "created_at": user["created_at"], "souls": user.get("souls", 0), "meta": user.get("meta", {}),
@@ -214,8 +265,9 @@ async def login(body: LoginRequest, request: Request, response: Response):
 
 @api_router.post("/auth/logout")
 async def logout(response: Response):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("access_token", path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie("refresh_token", path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie(CSRF_COOKIE, path="/", domain=COOKIE_DOMAIN)
     return {"ok": True}
 
 
@@ -237,8 +289,17 @@ async def refresh_token(request: Request, response: Response):
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token")
         access = create_token(payload["sub"], payload["email"], "access")
-        response.set_cookie("access_token", access, httponly=True, secure=True,
-            samesite="none", max_age=ACCESS_TOKEN_MINUTES * 60, path="/")
+        response.set_cookie(
+            "access_token",
+            access,
+            httponly=True,
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=ACCESS_TOKEN_MINUTES * 60,
+            path="/",
+            domain=COOKIE_DOMAIN,
+        )
+        set_csrf_cookie(response)
         return {"ok": True}
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
@@ -246,7 +307,10 @@ async def refresh_token(request: Request, response: Response):
 
 # --- Runs / Leaderboard ---
 @api_router.post("/runs")
-async def submit_run(body: RunSubmit, user: Optional[dict] = Depends(get_optional_user)):
+async def submit_run(body: RunSubmit, request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    # Guests may submit without CSRF. Auth'd cookie users must pass CSRF.
+    if user is not None:
+        require_csrf(request)
     run_id = str(uuid.uuid4())
     is_guest = user is None
     # compute souls earned
@@ -286,7 +350,7 @@ async def submit_run(body: RunSubmit, user: Optional[dict] = Depends(get_optiona
 async def leaderboard(limit: int = 50, character_class: Optional[str] = None):
     limit = max(1, min(limit, 100))
     query: dict = {}
-    if character_class in ("warrior", "mage"):
+    if character_class in ("warrior", "mage", "rogue", "ranger"):
         query["character_class"] = character_class
     cursor = db.runs.find(query, {"_id": 0}).sort(
         [("score", -1), ("depth", -1), ("created_at", 1)]
@@ -335,7 +399,8 @@ async def get_meta(user: dict = Depends(get_current_user)):
 
 
 @api_router.post("/meta/spend", response_model=MetaState)
-async def spend_meta(body: MetaSpend, user: dict = Depends(get_current_user)):
+async def spend_meta(body: MetaSpend, request: Request, user: dict = Depends(get_current_user)):
+    require_csrf(request)
     up_id = body.upgrade_id
     if up_id not in SOUL_COSTS:
         raise HTTPException(status_code=400, detail="Unknown upgrade")
@@ -367,9 +432,10 @@ async def spend_meta(body: MetaSpend, user: dict = Depends(get_current_user)):
 
 
 @api_router.post("/meta/award")
-async def award_souls(amount: int = Query(ge=0, le=10000), user: dict = Depends(get_current_user)):
+async def award_souls(request: Request, amount: int = Query(ge=0, le=10000), user: dict = Depends(get_current_user)):
     """Award souls for an auth'd run (called by client after POST /runs for extra idempotency).
        Normally /runs handles this inline — this endpoint is for edge cases."""
+    require_csrf(request)
     if amount <= 0:
         return {"souls": user.get("souls", 0)}
     updated = await db.users.find_one_and_update(

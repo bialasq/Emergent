@@ -18,7 +18,16 @@ export class CoopClient {
     this.id = null;
   }
   connect() {
-    const base = process.env.REACT_APP_BACKEND_URL.replace(/^http/, "ws");
+    const raw = process.env.REACT_APP_BACKEND_URL;
+    const devFallback =
+      process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "";
+    const baseUrl = String(raw || devFallback || "").trim();
+    if (!baseUrl) {
+      this.handlers.onError &&
+        this.handlers.onError("Set REACT_APP_BACKEND_URL (or run dev with backend on :8000)");
+      return;
+    }
+    const base = baseUrl.replace(/^http/, "ws");
     const qs = new URLSearchParams({ name: this.name, cls: this.cls });
     const url = `${base}/api/ws/coop/${encodeURIComponent(this.room)}?${qs}`;
     const ws = new WebSocket(url);

@@ -41,6 +41,42 @@ export const SPELLS = {
     color: "#e05a1a",
     desc: "Sear all foes within 1 tile of the nearest visible enemy.",
   },
+  death_wave: {
+    id: "death_wave",
+    name: "Death Wave",
+    hotkey: "z",
+    mpCost: 14,
+    baseUnlocked: false,
+    color: "#7ab8b8",
+    desc: "A piercing wave of death along the line to the nearest foe.",
+  },
+  energy_wave: {
+    id: "energy_wave",
+    name: "Energy Wave",
+    hotkey: "x",
+    mpCost: 14,
+    baseUnlocked: false,
+    color: "#1fb3b3",
+    desc: "A piercing wave of energy along the line to the nearest foe.",
+  },
+  inferno_orb: {
+    id: "inferno_orb",
+    name: "Inferno Orb",
+    hotkey: "c",
+    mpCost: 20,
+    baseUnlocked: false,
+    color: "#e05a1a",
+    desc: "Explodes in a circle (diameter 4 tiles) around the nearest visible foe.",
+  },
+  death_nova: {
+    id: "death_nova",
+    name: "Death Nova",
+    hotkey: "v",
+    mpCost: 35,
+    baseUnlocked: false,
+    color: "#b8860b",
+    desc: "Ultimate: death erupts around you (radius 5).",
+  },
   rope: {
     id: "rope",
     name: "Binding Rope",
@@ -53,7 +89,7 @@ export const SPELLS = {
   },
 };
 
-export const SPELL_ORDER = ["heal", "light", "haste", "fireball", "rope"];
+export const SPELL_ORDER = ["heal", "light", "haste", "fireball", "death_wave", "energy_wave", "inferno_orb", "death_nova", "rope"];
 
 export const SOUL_UPGRADES = [
   { id: "hp",   name: "Hardened Soul",  desc: "+5 max HP",   cost: 5,  max: 5, delta: { maxHp: 5 } },

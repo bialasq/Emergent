@@ -1,0 +1,24 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+  encode zstd gzip
+
+  # Frontend
+  handle_path /static/* {
+    reverse_proxy frontend:80
+  }
+  handle {
+    reverse_proxy frontend:80
+  }
+
+  # Backend API + WS
+  handle_path /api/* {
+    reverse_proxy backend:8000
+  }
+  handle_path /api/ws/* {
+    reverse_proxy backend:8000
+  }
+}
+

@@ -265,7 +265,7 @@ class TestRunsAndLeaderboard:
 
     def test_submit_invalid_character_class(self):
         payload = {
-            "seed": 1, "character_class": "rogue", "character_name": "X",
+            "seed": 1, "character_class": "wizard", "character_name": "X",
             "depth": 1, "score": 1, "kills": 0, "duration_seconds": 1,
             "outcome": "dead", "level": 1,
         }

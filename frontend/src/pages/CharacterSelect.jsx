@@ -98,7 +98,7 @@ export default function CharacterSelect() {
           <div>
             <h1 className="torch-title font-heading text-5xl">Choose Your Calling</h1>
             <p className="font-body text-dungeon-muted mt-2 max-w-xl">
-              Two paths descend into the crypt. Walk them carefully — only one breath separates you from oblivion.
+              Four callings echo in the crypt. Walk yours carefully — only one breath separates you from oblivion.
             </p>
           </div>
           <div className="flex items-center gap-2 dungeon-card px-5 py-3" data-testid="souls-display">

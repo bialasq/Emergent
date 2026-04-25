@@ -208,36 +208,36 @@ class TestCoopWebSocket:
 
         asyncio.run(run())
 
-    def test_pos_broadcast_not_echoed_to_sender(self):
+    def test_action_wait_broadcasts_state_to_both_players(self):
+        """Co-op uses server `action` messages, not legacy `pos` broadcasts."""
+
+        async def recv_state(ws):
+            for _ in range(40):
+                m = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+                if m.get("type") == "state":
+                    return m
+            raise AssertionError("no state message received")
+
         async def run():
             code = _room_code()
             ws1 = await _ws_connect(code, "Alice", "warrior")
             await asyncio.wait_for(ws1.recv(), timeout=5)  # joined
+            await asyncio.wait_for(ws1.recv(), timeout=5)  # map
 
             ws2 = await _ws_connect(code, "Bob", "mage")
             await asyncio.wait_for(ws2.recv(), timeout=5)  # joined
+            await asyncio.wait_for(ws2.recv(), timeout=5)  # map
             await asyncio.wait_for(ws1.recv(), timeout=5)  # player_join
+            await recv_state(ws1)
+            await recv_state(ws2)
 
-            # Bob sends pos
-            await ws2.send(json.dumps({"type": "pos", "x": 42, "y": 7}))
+            await ws2.send(json.dumps({"type": "action", "kind": "wait"}))
 
-            # Alice should receive event
-            ev = json.loads(await asyncio.wait_for(ws1.recv(), timeout=5))
-            assert ev["type"] == "event"
-            assert ev["data"]["type"] == "pos"
-            assert ev["data"]["x"] == 42
-            assert ev["data"]["y"] == 7
-            assert "from" in ev
-
-            # Bob should NOT receive an echo of his own pos
-            try:
-                bob_msg = await asyncio.wait_for(ws2.recv(), timeout=1.5)
-                # If we got a message, make sure it's NOT the pos echo
-                parsed = json.loads(bob_msg)
-                assert not (parsed.get("type") == "event" and parsed.get("data", {}).get("type") == "pos" and parsed.get("data", {}).get("x") == 42), \
-                    f"Bob received echo of his own pos: {parsed}"
-            except asyncio.TimeoutError:
-                pass  # expected
+            st1 = await recv_state(ws1)
+            st2 = await recv_state(ws2)
+            assert st1["you"]["name"] == "Alice"
+            assert st2["you"]["name"] == "Bob"
+            assert st1["you"]["id"] != st2["you"]["id"]
 
             await ws1.close()
             await ws2.close()
