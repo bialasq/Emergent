@@ -71,21 +71,17 @@ export default function MultiplayerLobby() {
           </div>
           <div>
             <label className="block font-sub text-sm text-dungeon-parchment mb-1">Calling</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setCls("warrior")}
-                className={`btn-dungeon !py-2 !px-4 flex-1 ${cls === "warrior" ? "" : "btn-ghost"}`}
-                data-testid="mp-cls-warrior"
-              >
-                Warrior
-              </button>
-              <button
-                onClick={() => setCls("mage")}
-                className={`btn-dungeon btn-teal !py-2 !px-4 flex-1 ${cls === "mage" ? "" : "btn-ghost !border-dungeon-border"}`}
-                data-testid="mp-cls-mage"
-              >
-                Mage
-              </button>
+            <div className="grid grid-cols-2 gap-2">
+              {["warrior", "mage", "rogue", "ranger"].map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setCls(k)}
+                  className={`btn-dungeon !py-2 !px-3 ${cls === k ? "" : "btn-ghost"}`}
+                  data-testid={`mp-cls-${k}`}
+                >
+                  {k.charAt(0).toUpperCase() + k.slice(1)}
+                </button>
+              ))}
             </div>
           </div>
           <div>

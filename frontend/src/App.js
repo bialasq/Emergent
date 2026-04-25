@@ -9,6 +9,7 @@ import CharacterSelect from "./pages/CharacterSelect";
 import GamePage from "./pages/Game";
 import Leaderboard from "./pages/Leaderboard";
 import MultiplayerLobby from "./pages/MultiplayerLobby";
+import Daily from "./pages/Daily";
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/register" element={<Register />} />
             <Route path="/play" element={<CharacterSelect />} />
             <Route path="/coop" element={<MultiplayerLobby />} />
+            <Route path="/daily" element={<Daily />} />
             <Route path="/game" element={<GamePage />} />
             <Route path="/leaderboard" element={<Leaderboard />} />
           </Routes>

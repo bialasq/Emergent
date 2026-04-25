@@ -381,76 +381,87 @@ async def award_souls(amount: int = Query(ge=0, le=10000), user: dict = Depends(
     return {"souls": (updated or {}).get("souls", 0)}
 
 
+from game_state import GameRoom, MAP_W, MAP_H
+
 # --- Multiplayer co-op (WebSocket) ---
 class CoopRoom:
     def __init__(self, code: str, seed: int):
         self.code = code
         self.seed = seed
-        self.players: Dict[str, Dict[str, Any]] = {}  # id -> {id,name,cls,ws,x,y,depth}
+        self.game = GameRoom(code, seed)
+        self.connections: Dict[str, WebSocket] = {}  # pid -> ws
         self.created_at = datetime.now(timezone.utc)
         self.lock = asyncio.Lock()
-
-    def snapshot(self, exclude: Optional[str] = None):
-        out = []
-        for pid, p in self.players.items():
-            if pid == exclude:
-                continue
-            out.append({"id": pid, "name": p["name"], "cls": p["cls"], "x": p.get("x", 0), "y": p.get("y", 0), "depth": p.get("depth", 1)})
-        return out
 
 
 COOP_ROOMS: Dict[str, CoopRoom] = {}
 
 
-async def broadcast(room: CoopRoom, message: dict, exclude: Optional[str] = None):
+async def broadcast_coop(room: CoopRoom, message: dict, exclude: Optional[str] = None):
     payload = json.dumps(message)
     dead = []
-    for pid, p in list(room.players.items()):
-        if pid == exclude:
-            continue
+    for pid, ws in list(room.connections.items()):
+        if pid == exclude: continue
         try:
-            await p["ws"].send_text(payload)
+            await ws.send_text(payload)
         except Exception:
             dead.append(pid)
     for pid in dead:
-        room.players.pop(pid, None)
+        room.connections.pop(pid, None)
+        room.game.remove_player(pid)
+
+
+async def send_state_to_all(room: CoopRoom):
+    """Send a per-player state snapshot (each player sees only their FOV)."""
+    for pid, ws in list(room.connections.items()):
+        try:
+            await ws.send_text(json.dumps(room.game.state_for(pid)))
+        except Exception:
+            pass
 
 
 @app.websocket("/api/ws/coop/{room_code}")
 async def ws_coop(websocket: WebSocket, room_code: str, name: str = "Wanderer", cls: str = "warrior"):
     await websocket.accept()
     code = (room_code or "").strip().upper()[:12]
-    if not code:
+    if not code or not code.replace("_", "").isalnum():
         await websocket.close(code=4000)
         return
-    # cap rooms at 4 players
     room = COOP_ROOMS.get(code)
     if room is None:
-        # deterministic seed per room code (zlib.crc32 is process-stable)
         seed = zlib.crc32(code.encode("utf-8")) & 0x7FFFFFFF
         room = CoopRoom(code, seed)
         COOP_ROOMS[code] = room
-    if len(room.players) >= 4:
+    if len(room.connections) >= 4:
         await websocket.send_text(json.dumps({"type": "error", "detail": "Room full"}))
         await websocket.close(code=4001)
         return
 
     pid = str(uuid.uuid4())
     clean_name = (name or "Wanderer")[:24]
-    clean_cls = "mage" if cls == "mage" else "warrior"
+    clean_cls = cls if cls in ("warrior", "mage", "rogue", "ranger") else "warrior"
+
     async with room.lock:
-        room.players[pid] = {"id": pid, "name": clean_name, "cls": clean_cls, "ws": websocket, "x": 0, "y": 0, "depth": 1}
+        room.game.add_player(pid, clean_name, clean_cls)
+        room.connections[pid] = websocket
+
+    # Initial messages: joined + map + first state
+    you = room.game.players[pid]
+    others = [
+        {"id": p.pid, "name": p.name, "cls": p.cls, "x": p.x, "y": p.y, "alive": p.alive}
+        for p in room.game.players.values() if p.pid != pid
+    ]
     await websocket.send_text(json.dumps({
-        "type": "joined",
-        "you": {"id": pid, "name": clean_name, "cls": clean_cls},
-        "seed": room.seed,
-        "room": code,
-        "players": room.snapshot(exclude=pid),
+        "type": "joined", "you": {"id": pid, "name": clean_name, "cls": clean_cls},
+        "seed": room.seed, "room": code, "players": others,
     }))
-    await broadcast(room, {
-        "type": "player_join",
-        "player": {"id": pid, "name": clean_name, "cls": clean_cls, "x": 0, "y": 0, "depth": 1},
-    }, exclude=pid)
+    await websocket.send_text(json.dumps({"type": "map", **room.game.map_payload()}))
+
+    # Notify others of new player; send_state_to_all will deliver fresh state to ALL (including the new player)
+    await broadcast_coop(room, {"type": "player_join", "player": {
+        "id": pid, "name": clean_name, "cls": clean_cls, "x": you.x, "y": you.y, "alive": True,
+    }}, exclude=pid)
+    await send_state_to_all(room)
 
     try:
         while True:
@@ -459,32 +470,68 @@ async def ws_coop(websocket: WebSocket, room_code: str, name: str = "Wanderer", 
                 data = json.loads(raw)
             except Exception:
                 continue
-            if not isinstance(data, dict):
-                continue
+            if not isinstance(data, dict): continue
             mtype = data.get("type")
-            p = room.players.get(pid)
-            if not p:
-                break
-            if mtype == "pos" or mtype == "spawn":
-                p["x"] = int(data.get("x", 0))
-                p["y"] = int(data.get("y", 0))
-                if "depth" in data:
-                    p["depth"] = int(data["depth"])
-            elif mtype == "descend":
-                p["depth"] = int(data.get("depth", p["depth"]))
-            # forward to others
-            await broadcast(room, {"type": "event", "from": pid, "data": data}, exclude=pid)
+            if mtype == "action":
+                async with room.lock:
+                    prev_depth = room.game.depth
+                    room.game.handle(pid, data)
+                    if room.game.depth != prev_depth:
+                        # broadcast new map to everyone
+                        for ws in room.connections.values():
+                            try:
+                                await ws.send_text(json.dumps({"type": "map", **room.game.map_payload()}))
+                            except Exception:
+                                pass
+                await send_state_to_all(room)
+                if room.game.victory:
+                    await broadcast_coop(room, {"type": "victory"})
+            elif mtype == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning(f"WS error: {e}")
     finally:
         async with room.lock:
-            room.players.pop(pid, None)
-            empty = len(room.players) == 0
-        await broadcast(room, {"type": "player_leave", "id": pid})
+            room.connections.pop(pid, None)
+            room.game.remove_player(pid)
+            empty = len(room.connections) == 0
+        await broadcast_coop(room, {"type": "player_leave", "id": pid})
+        await send_state_to_all(room)
         if empty:
             COOP_ROOMS.pop(code, None)
+
+
+# --- Daily Challenge ---
+@api_router.get("/daily")
+async def daily_challenge():
+    """Returns today's UTC seed — same for all players globally."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    seed = zlib.crc32(f"daily-{today}".encode("utf-8")) & 0x7FFFFFFF
+    return {"date": today, "seed": seed, "tag": f"DAILY-{today}"}
+
+
+@api_router.get("/daily/leaderboard", response_model=List[LeaderboardEntry])
+async def daily_leaderboard(limit: int = 50):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    seed = zlib.crc32(f"daily-{today}".encode("utf-8")) & 0x7FFFFFFF
+    cursor = db.runs.find({"seed": seed}, {"_id": 0}).sort(
+        [("score", -1), ("depth", -1), ("created_at", 1)]
+    ).limit(max(1, min(limit, 100)))
+    out: List[LeaderboardEntry] = []
+    rank = 1
+    async for r in cursor:
+        out.append(LeaderboardEntry(
+            rank=rank, username=r.get("username", "Wanderer"),
+            character_class=r["character_class"], character_name=r["character_name"],
+            depth=r["depth"], level=r.get("level", 1), score=r["score"],
+            kills=r["kills"], duration_seconds=r["duration_seconds"],
+            outcome=r["outcome"], created_at=r["created_at"],
+            is_guest=r.get("is_guest", False),
+        ))
+        rank += 1
+    return out
 
 
 @api_router.get("/")

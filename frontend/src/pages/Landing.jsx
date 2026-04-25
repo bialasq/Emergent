@@ -99,6 +99,11 @@ export default function Landing() {
                 <Skull className="w-4 h-4" /> Shared Descent
               </button>
             </Link>
+            <Link to="/daily" data-testid="play-daily-btn">
+              <button className="btn-dungeon btn-ghost flex items-center gap-3">
+                <Flame className="w-4 h-4" /> Daily Echo
+              </button>
+            </Link>
             {!isAuthed && (
               <Link to="/register" data-testid="cta-register-btn">
                 <button className="btn-dungeon btn-ghost flex items-center gap-3">

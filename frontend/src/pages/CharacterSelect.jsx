@@ -12,6 +12,8 @@ import { ChevronLeft, Swords, Sparkles, Plus } from "lucide-react";
 const ART = {
   warrior: "https://images.pexels.com/photos/339805/pexels-photo-339805.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
   mage: "https://images.pexels.com/photos/30692119/pexels-photo-30692119.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+  rogue: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=940&q=80",
+  ranger: "https://images.unsplash.com/photo-1505069190533-da1c9af13346?auto=format&fit=crop&w=940&q=80",
 };
 
 export default function CharacterSelect() {
@@ -105,7 +107,7 @@ export default function CharacterSelect() {
           </div>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6 mb-10">
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
           {Object.entries(CLASSES).map(([key, cls]) => {
             const active = selected === key;
             return (
@@ -118,21 +120,20 @@ export default function CharacterSelect() {
                 }`}
                 data-testid={`class-${key}-card`}
               >
-                <div className="h-56 relative" style={{ backgroundImage: `url(${ART[key]})`, backgroundSize: "cover", backgroundPosition: "center", filter: "grayscale(0.6) contrast(1.1)" }}>
+                <div className="h-40 relative" style={{ backgroundImage: `url(${ART[key]})`, backgroundSize: "cover", backgroundPosition: "center", filter: "grayscale(0.6) contrast(1.1)" }}>
                   <div className="absolute inset-0 bg-gradient-to-t from-dungeon-stone via-dungeon-stone/40 to-transparent" />
                 </div>
-                <div className="p-6">
+                <div className="p-5">
                   <div className="flex items-baseline justify-between">
-                    <h2 className="font-heading text-2xl tracking-widest uppercase">{cls.name}</h2>
-                    {key === "mage" ? <Sparkles className="w-5 h-5 text-dungeon-teal" /> : <Swords className="w-5 h-5 text-dungeon-blood" />}
+                    <h2 className="font-heading text-lg tracking-widest uppercase">{cls.name}</h2>
+                    {key === "mage" ? <Sparkles className="w-4 h-4 text-dungeon-teal" /> : <Swords className="w-4 h-4 text-dungeon-blood" />}
                   </div>
-                  <p className="font-body text-dungeon-parchment/80 mt-1">{cls.desc}</p>
-                  <p className="font-body italic text-sm text-dungeon-muted mt-3">{cls.lore}</p>
-                  <div className="grid grid-cols-4 gap-2 mt-5 font-heading text-xs tracking-widest uppercase text-dungeon-muted">
-                    <div><div className="text-dungeon-parchment">{cls.stats.maxHp}</div>HP</div>
-                    <div><div className="text-dungeon-parchment">{cls.stats.maxMp}</div>MP</div>
-                    <div><div className="text-dungeon-parchment">{cls.stats.atk}</div>ATK</div>
-                    <div><div className="text-dungeon-parchment">{cls.stats.def}</div>DEF</div>
+                  <p className="font-body text-dungeon-parchment/80 mt-1 text-sm">{cls.desc}</p>
+                  <div className="grid grid-cols-4 gap-1 mt-4 font-heading text-[10px] tracking-widest uppercase text-dungeon-muted">
+                    <div><div className="text-dungeon-parchment text-sm">{cls.stats.maxHp}</div>HP</div>
+                    <div><div className="text-dungeon-parchment text-sm">{cls.stats.maxMp}</div>MP</div>
+                    <div><div className="text-dungeon-parchment text-sm">{cls.stats.atk}</div>ATK</div>
+                    <div><div className="text-dungeon-parchment text-sm">{cls.stats.def}</div>DEF</div>
                   </div>
                 </div>
               </motion.button>

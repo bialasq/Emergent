@@ -16,6 +16,7 @@ import {
 } from "./entities";
 import { drawTile, drawPlayer, drawEnemy, drawItem, drawGhostPlayer } from "./sprites";
 import { SPELLS, SPELL_ORDER, applyMetaToStats, soulsFromRun } from "./spells";
+import { BIOMES, biomeForDepth } from "./biomes";
 
 export class Game {
   constructor({
@@ -733,12 +734,12 @@ export class Game {
       ctx.globalAlpha = 1;
     }
 
-    // torch vignette
+    // torch vignette (biome-tinted)
     const grad = ctx.createRadialGradient(
       this.viewW / 2, this.viewH / 2, Math.min(this.viewW, this.viewH) * 0.2,
       this.viewW / 2, this.viewH / 2, Math.max(this.viewW, this.viewH) * 0.8
     );
-    grad.addColorStop(0, "rgba(255,170,80,0.02)");
+    grad.addColorStop(0, biome.vignette);
     grad.addColorStop(0.4, "rgba(0,0,0,0)");
     grad.addColorStop(1, "rgba(0,0,0,0.75)");
     ctx.fillStyle = grad;

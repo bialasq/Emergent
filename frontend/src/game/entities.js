@@ -17,6 +17,22 @@ export const CLASSES = {
     stats: { maxHp: 25, maxMp: 30, atk: 4, def: 1, crit: 0.18, range: 4, dmgDice: [5, 10] },
     lore: "A seeker of forbidden echoes, channeling teal flame through runes.",
   },
+  rogue: {
+    name: "Rogue",
+    desc: "Swift and cruel. Crippling crits in close darkness.",
+    color: "#7a2f8c",
+    glyph: "@",
+    stats: { maxHp: 30, maxMp: 15, atk: 5, def: 2, crit: 0.25, range: 1, dmgDice: [3, 9] },
+    lore: "A whispering shadow, daggers slick with promise.",
+  },
+  ranger: {
+    name: "Ranger",
+    desc: "Bow-bearer of the wilds. Strikes from afar without mana.",
+    color: "#3a7d44",
+    glyph: "@",
+    stats: { maxHp: 32, maxMp: 12, atk: 5, def: 2, crit: 0.15, range: 5, dmgDice: [3, 8] },
+    lore: "A keeper of forest paths, feathered shafts whispering through stone.",
+  },
 };
 
 export const ENEMIES = {
