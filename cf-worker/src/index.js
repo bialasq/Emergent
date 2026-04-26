@@ -40,6 +40,18 @@ function bad(env, req, status, detail) {
   return json(env, req, { detail }, status);
 }
 
+/** Bearer JWT requires a secret — set in prod with `wrangler secret put JWT_SECRET` (never commit). */
+function requireJwtSecret(env, req) {
+  const s = env.JWT_SECRET;
+  if (typeof s === "string" && s.length >= 16) return null;
+  return bad(
+    env,
+    req,
+    503,
+    "Brak JWT_SECRET na Workerze. Właściciel projektu: w katalogu cf-worker uruchom `npx wrangler secret put JWT_SECRET` i wklej losowy ciąg (min. 16 znaków), potem ponów deploy.",
+  );
+}
+
 function readJson(req) {
   return req.json().catch(() => null);
 }
@@ -187,6 +199,9 @@ async function route(env, req) {
     if (password.length < 6 || password.length > 100) return bad(env, req, 400, "Invalid password");
     if (username.length < 2 || username.length > 32) return bad(env, req, 400, "Invalid username");
 
+    const jwtMissing = requireJwtSecret(env, req);
+    if (jwtMissing) return jwtMissing;
+
     const existsEmail = await env.DB.prepare("SELECT 1 FROM users WHERE email=?").bind(email).first();
     if (existsEmail) return bad(env, req, 400, "Email already registered");
     const existsUser = await env.DB.prepare("SELECT 1 FROM users WHERE username_lower=?").bind(username.toLowerCase()).first();
@@ -196,9 +211,18 @@ async function route(env, req) {
     const salt = base64url(crypto.getRandomValues(new Uint8Array(18)));
     const hash = await pbkdf2Hash(password, salt);
     const created_at = nowIso();
-    await env.DB.prepare(
-      "INSERT INTO users (id,email,username,username_lower,password_hash,password_salt,created_at,souls,meta_json) VALUES (?,?,?,?,?,?,?,?,?)",
-    ).bind(id, email, username, username.toLowerCase(), hash, salt, created_at, 0, "{}").run();
+    try {
+      await env.DB.prepare(
+        "INSERT INTO users (id,email,username,username_lower,password_hash,password_salt,created_at,souls,meta_json) VALUES (?,?,?,?,?,?,?,?,?)",
+      ).bind(id, email, username, username.toLowerCase(), hash, salt, created_at, 0, "{}").run();
+    } catch (dbErr) {
+      const msg = String(dbErr?.message || dbErr || "");
+      if (/unique|constraint|SQLITE_CONSTRAINT/i.test(msg)) {
+        return bad(env, req, 400, "Email lub nazwa jest już zajęta.");
+      }
+      console.error("register D1", dbErr);
+      return bad(env, req, 500, "Błąd bazy — sprawdź, czy na D1 wykonano schema (npm run d1:remote).");
+    }
 
     const accessExp = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_DAYS * 86400;
     const access_token = await signJwtHS256(env.JWT_SECRET, { sub: id, email, type: "access", exp: accessExp });
@@ -210,6 +234,9 @@ async function route(env, req) {
     const email = String(body?.email || "").toLowerCase().trim();
     const password = String(body?.password || "");
     if (!email || !password) return bad(env, req, 400, "Invalid credentials");
+
+    const jwtMissingLogin = requireJwtSecret(env, req);
+    if (jwtMissingLogin) return jwtMissingLogin;
 
     // rate limit (basic)
     const ip = req.headers.get("cf-connecting-ip") || "unknown";
