@@ -12,6 +12,7 @@ import { getGuestMeta, setGuestMeta, addGuestSouls } from "../game/meta";
 import { applyMetaToStats } from "../game/spells";
 import { CoopClient } from "../services/coop";
 import { startAmbient, stopAmbient, sfx, setMuted, isMuted } from "../game/audio";
+import { loadTileAtlas } from "../game/tileAtlas";
 import { Flame, Pause, LogOut, Users, Volume2, VolumeX } from "lucide-react";
 
 function useQuery() {
@@ -57,88 +58,97 @@ export default function GamePage() {
     return () => stopAmbient();
   }, []);
 
-  // Init game
+  // Init game (preload tile atlas first so first paint uses bitmap floors)
   useEffect(() => {
-    if (isCoop) {
-      // Server-authoritative coop
-      const renderer = new CoopRenderer({
-        canvas: canvasRef.current,
-        minimap: minimapRef.current,
-        coop: null, // assigned below
-        onState: (s) => {
-          // Build HUD-compatible shape from server state
-          const y = s.you;
-          setCoopHud({
-            player: {
-              cls: y.cls, name: y.name,
-              hp: y.hp, maxHp: y.maxHp, mp: y.mp, maxMp: y.maxMp,
-              level: y.level, xp: y.xp, nextXp: y.nextXp,
-              gold: y.gold, inv: [
-                ...Array(y.potions).fill({ kind: "potion" }),
-                ...Array(y.manas).fill({ kind: "mana" }),
-              ],
-              unlockedSpells: ["heal", "light", "haste", "fireball", "rope"],
-              spellState: { lightTurns: y.lightTurns, hasteTurns: y.hasteTurns },
-            },
-            depth: s.depth,
-            kills: y.kills,
-            score: y.score,
-            extraActions: y.extraActions,
-            waitingForAllies: !!s.waitingForAllies,
-            log: s.log.map((l) => ({ msg: l.msg, kind: "info" })),
-          });
-        },
-        onVictory: (s) => setVictory(s),
-        onDeath: (s) => setDeath(s),
+    let cancelled = false;
+
+    const boot = async () => {
+      await loadTileAtlas().catch((e) => {
+        console.warn("[Dungeon of Echoes] Tile atlas failed to load — using procedural tiles.", e);
       });
-      gameRef.current = renderer;
-      const coop = new CoopClient({
-        room, name, cls,
-        onJoined: () => setCoopReady(true),
-        onMap: (m) => renderer.setMap(m),
-        onState: (s) => renderer.setState(s),
-        onPlayerJoin: (p) => setCoopPlayers((prev) => [...prev.filter(x => x.id !== p.id), p]),
-        onPlayerLeave: (id) => setCoopPlayers((prev) => prev.filter(x => x.id !== id)),
-        onVictory: () => { /* will be reflected in state */ },
-        onError: (e) => console.warn("coop err", e),
-        onClose: () => { /* connection closed */ },
-      });
-      coopRef.current = coop;
-      renderer.coop = coop;
-      coop.connect();
-      renderer.start();
-    } else {
-      const meta = user && user.username ? (user.meta || {}) : getGuestMeta().upgrades;
-      const { startPotions, unlockedSpells } = applyMetaToStats({}, meta);
-      const game = new Game({
-        canvas: canvasRef.current,
-        minimap: minimapRef.current,
-        seed, classKey: cls, characterName: name,
-        meta, startPotions, unlockedSpells,
-        onStateChange: (s) => {
-          setState((prev) => {
-            // detect transitions for sfx
-            if (prev) {
-              if ((s.kills || 0) > (prev.kills || 0)) sfx.hit();
-              if (s.depth !== prev.depth) sfx.descend();
-              const ph = prev.player?.hp || 0;
-              const ch = s.player?.hp || 0;
-              if (ch < ph) sfx.hurt();
-            }
-            return s;
-          });
-        },
-        onDeath: (summary) => { sfx.death(); setDeath(summary); },
-        onVictory: (summary) => { sfx.victory(); setVictory(summary); },
-        onLevelUp: (upgrades) => { sfx.levelup(); setLevelUp({ open: true, upgrades }); },
-      });
-      gameRef.current = game;
-      game.start();
-    }
+      if (cancelled) return;
+
+      if (isCoop) {
+        const renderer = new CoopRenderer({
+          canvas: canvasRef.current,
+          minimap: minimapRef.current,
+          coop: null,
+          onState: (s) => {
+            const y = s.you;
+            setCoopHud({
+              player: {
+                cls: y.cls, name: y.name,
+                hp: y.hp, maxHp: y.maxHp, mp: y.mp, maxMp: y.maxMp,
+                level: y.level, xp: y.xp, nextXp: y.nextXp,
+                gold: y.gold, inv: [
+                  ...Array(y.potions).fill({ kind: "potion" }),
+                  ...Array(y.manas).fill({ kind: "mana" }),
+                ],
+                unlockedSpells: ["heal", "light", "haste", "fireball", "rope"],
+                spellState: { lightTurns: y.lightTurns, hasteTurns: y.hasteTurns },
+              },
+              depth: s.depth,
+              kills: y.kills,
+              score: y.score,
+              extraActions: y.extraActions,
+              waitingForAllies: !!s.waitingForAllies,
+              log: s.log.map((l) => ({ msg: l.msg, kind: "info" })),
+            });
+          },
+          onVictory: (s) => setVictory(s),
+          onDeath: (s) => setDeath(s),
+        });
+        gameRef.current = renderer;
+        const coop = new CoopClient({
+          room, name, cls,
+          onJoined: () => setCoopReady(true),
+          onMap: (m) => renderer.setMap(m),
+          onState: (s) => renderer.setState(s),
+          onPlayerJoin: (p) => setCoopPlayers((prev) => [...prev.filter(x => x.id !== p.id), p]),
+          onPlayerLeave: (id) => setCoopPlayers((prev) => prev.filter(x => x.id !== id)),
+          onVictory: () => { /* reflected in state */ },
+          onError: (e) => console.warn("coop err", e),
+          onClose: () => {},
+        });
+        coopRef.current = coop;
+        renderer.coop = coop;
+        coop.connect();
+        renderer.start();
+      } else {
+        const meta = user && user.username ? (user.meta || {}) : getGuestMeta().upgrades;
+        const { startPotions, unlockedSpells } = applyMetaToStats({}, meta);
+        const game = new Game({
+          canvas: canvasRef.current,
+          minimap: minimapRef.current,
+          seed, classKey: cls, characterName: name,
+          meta, startPotions, unlockedSpells,
+          onStateChange: (s) => {
+            setState((prev) => {
+              if (prev) {
+                if ((s.kills || 0) > (prev.kills || 0)) sfx.hit();
+                if (s.depth !== prev.depth) sfx.descend();
+                const ph = prev.player?.hp || 0;
+                const ch = s.player?.hp || 0;
+                if (ch < ph) sfx.hurt();
+              }
+              return s;
+            });
+          },
+          onDeath: (summary) => { sfx.death(); setDeath(summary); },
+          onVictory: (summary) => { sfx.victory(); setVictory(summary); },
+          onLevelUp: (upgrades) => { sfx.levelup(); setLevelUp({ open: true, upgrades }); },
+        });
+        gameRef.current = game;
+        game.start();
+      }
+    };
+
+    void boot();
 
     const onResize = () => gameRef.current && gameRef.current.resize();
     window.addEventListener("resize", onResize);
     return () => {
+      cancelled = true;
       window.removeEventListener("resize", onResize);
       gameRef.current && gameRef.current.stop();
       coopRef.current && coopRef.current.close();

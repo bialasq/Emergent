@@ -1,15 +1,17 @@
-// Cloudflare Worker API (D1) for Dungeon of Echoes
+// Cloudflare Worker API (D1) + Co-op WebSockets (Durable Object).
 // Cross-domain setup (Pages -> workers.dev): use CORS + Bearer auth (no cookies).
+
+import { parseAllowedOrigins, resolveAllowOrigin, isOriginAllowed } from "./allowOrigin.js";
+import { CoopRoomDO } from "./coop/coopRoomDO.js";
+
+export { CoopRoomDO };
 
 const ACCESS_TOKEN_DAYS = 30;
 
 function corsHeaders(env, req) {
   const origin = req.headers.get("origin") || "";
-  const allowed = String(env.ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const allowOrigin = allowed.includes(origin) ? origin : (allowed[0] || "");
+  const allowed = parseAllowedOrigins(env);
+  const allowOrigin = resolveAllowOrigin(origin, allowed);
   return {
     "access-control-allow-origin": allowOrigin,
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
@@ -153,6 +155,24 @@ async function route(env, req) {
   const path = url.pathname;
   // CORS preflight
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(env, req) });
+
+  // Co-op WebSocket → Durable Object (one instance per room code)
+  if (path.startsWith("/api/ws/coop/")) {
+    if (req.method !== "GET") return bad(env, req, 405, "Method not allowed");
+    const origin = req.headers.get("Origin") || "";
+    if (!isOriginAllowed(origin, env)) {
+      return new Response("Forbidden origin", { status: 403 });
+    }
+    const m = path.match(/^\/api\/ws\/coop\/([^/]+)\/?$/i);
+    if (!m) return bad(env, req, 400, "Invalid room");
+    const code = decodeURIComponent(m[1]).trim().toUpperCase().slice(0, 12);
+    const alnum = code.replace(/_/g, "");
+    if (!code || !/^[A-Z0-9_]+$/.test(code) || !/^[A-Z0-9]+$/.test(alnum)) {
+      return bad(env, req, 400, "Invalid room code");
+    }
+    const id = env.COOP_ROOM.idFromName(code);
+    return env.COOP_ROOM.get(id).fetch(req);
+  }
 
   // Health
   if (path === "/api/" || path === "/api") return json(env, req, { message: "Dungeon of Echoes API", status: "ok" });
@@ -340,6 +360,17 @@ async function route(env, req) {
       .bind(cost, JSON.stringify(meta), u.id).run();
     const row = await env.DB.prepare("SELECT souls,meta_json FROM users WHERE id=?").bind(u.id).first();
     return json(env, req, { souls: row?.souls || 0, upgrades: JSON.parse(row?.meta_json || "{}") });
+  }
+
+  // Optional idempotent-ish top-up (FastAPI parity); POST /runs normally awards souls inline
+  if (path === "/api/meta/award" && req.method === "POST") {
+    const u = await getUserByAccess(env, req);
+    if (!u) return bad(env, req, 401, "Not authenticated");
+    const amount = clamp(Number(url.searchParams.get("amount") || 0) | 0, 0, 10000);
+    if (amount <= 0) return json(env, req, { souls: u.souls || 0 });
+    await env.DB.prepare("UPDATE users SET souls = souls + ? WHERE id=?").bind(amount, u.id).run();
+    const row = await env.DB.prepare("SELECT souls FROM users WHERE id=?").bind(u.id).first();
+    return json(env, req, { souls: row?.souls ?? 0 });
   }
 
   // Daily seed + leaderboard

@@ -59,7 +59,8 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test"
+    "test": "craco test",
+    "deploy:pages": "npm run build && npx --yes wrangler@4 pages deploy build --project-name=dungeon-of-echoes"
   },
   "browserslist": {
     "production": [

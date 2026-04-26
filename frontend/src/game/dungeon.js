@@ -2,6 +2,51 @@
 import { makeRng } from "./rng";
 import { T, MAP_W, MAP_H } from "./tiles";
 
+/** 0–1 smooth hash for organic terrain bands */
+function hash2(x, y) {
+  const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+/**
+ * Majority-filter materials on FLOOR only — removes single-tile speckles, softens biome edges.
+ */
+export function smoothFloorMaterials(map, mat, passes = 3) {
+  const H = map.length;
+  const W = map[0].length;
+  for (let p = 0; p < passes; p++) {
+    const next = mat.map((row) => row.slice());
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        if (map[y][x] !== T.FLOOR) {
+          next[y][x] = mat[y][x];
+          continue;
+        }
+        const counts = {};
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (map[ny][nx] !== T.FLOOR) continue;
+            const m = mat[ny][nx];
+            counts[m] = (counts[m] || 0) + 1;
+          }
+        }
+        let bestM = mat[y][x];
+        let bestCnt = -1;
+        for (const k of Object.keys(counts)) {
+          if (counts[k] > bestCnt) {
+            bestCnt = counts[k];
+            bestM = Number(k);
+          }
+        }
+        next[y][x] = bestM;
+      }
+    }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) mat[y][x] = next[y][x];
+  }
+}
+
 class BSPNode {
   constructor(x, y, w, h) {
     this.x = x; this.y = y; this.w = w; this.h = h;
@@ -126,19 +171,50 @@ export function generateDungeon(seed, depth) {
   for (let x = 0; x < MAP_W; x++) { map[0][x] = T.WALL; map[MAP_H-1][x] = T.WALL; }
   for (let y = 0; y < MAP_H; y++) { map[y][0] = T.WALL; map[y][MAP_W-1] = T.WALL; }
 
+  // Dungeon floor: mostly stone; organic rubble blobs; smoothed (no isolated tile speckles)
+  const materials = Array.from({ length: MAP_H }, () => new Array(MAP_W).fill(0));
+  for (let i = 0; i < 7; i++) {
+    const cx = rng.int(12, MAP_W - 12);
+    const cy = rng.int(12, MAP_H - 12);
+    if (map[cy][cx] !== T.FLOOR) continue;
+    const r = rng.int(3, 6);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 1 || y < 1 || x >= MAP_W - 1 || y >= MAP_H - 1) continue;
+        if (map[y][x] !== T.FLOOR) continue;
+        if (dx * dx + dy * dy <= r * r) materials[y][x] = 1;
+      }
+    }
+  }
+  for (let y = 1; y < MAP_H - 1; y++) {
+    for (let x = 1; x < MAP_W - 1; x++) {
+      const t = map[y][x];
+      if (t === T.STAIRS_DOWN || t === T.DOOR) materials[y][x] = 0;
+    }
+  }
+  smoothFloorMaterials(map, materials, 3);
+
   return {
     map,
     rooms,
     start: { x: start.cx, y: start.cy },
     exit: { x: far.cx, y: far.cy },
     rng,
+    materials,
   };
 }
 
-export function isWalkable(map, x, y) {
+export function isWalkable(map, x, y, openDoors) {
   if (y < 0 || y >= MAP_H || x < 0 || x >= MAP_W) return false;
   const t = map[y][x];
-  return t === T.FLOOR || t === T.STAIRS_DOWN || t === T.STAIRS_UP || t === T.DOOR;
+  if (t === T.FLOOR || t === T.STAIRS_DOWN || t === T.STAIRS_UP) return true;
+  if (t === T.DOOR) {
+    if (openDoors == null) return true;
+    return openDoors.has(x + "," + y);
+  }
+  return false;
 }
 
 // ---------------- World map: 3 cities ----------------
@@ -293,12 +369,18 @@ export function generateWorldMap(seed) {
     }
   }
 
-  // sandy band (Defend sits near it)
+  // Grass → worn dirt → sand belt (south) with low-frequency noise; then smooth (no pepper noise)
   for (let y = 0; y < MAP_H; y++) {
     for (let x = 0; x < MAP_W; x++) {
       if (map[y][x] !== T.FLOOR) continue;
-      if (y > MAP_H * 0.62 && y < MAP_H * 0.86 && rng.chance(0.12)) mat[y][x] = 4; // sand
-      if (y > MAP_H * 0.66 && y < MAP_H * 0.82 && rng.chance(0.06)) mat[y][x] = 1; // rubble patches
+      const band = y / MAP_H;
+      const n = hash2(x, y) * 0.11 + hash2(Math.floor(x / 3), Math.floor(y / 3)) * 0.09;
+      let t = 0;
+      if (band > 0.54) t = (band - 0.54) / 0.4;
+      t += n;
+      if (t < 0.38) mat[y][x] = 3;
+      else if (t < 0.58) mat[y][x] = 1;
+      else mat[y][x] = 4;
     }
   }
 
@@ -326,6 +408,8 @@ export function generateWorldMap(seed) {
       }
     }
   }
+
+  smoothFloorMaterials(map, mat, 4);
 
   // start in Serva plaza
   const start = { x: serva.cx, y: serva.cy };

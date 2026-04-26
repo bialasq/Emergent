@@ -8,6 +8,7 @@
 // Player input (keys) → action messages → server → state snapshot → render.
 
 import { drawTile, drawPlayer, drawEnemy, drawItem, drawGhostPlayer } from "./sprites";
+import { loadTileAtlas, atlasReady, drawAutotileFloor } from "./tileAtlas";
 import { TILE, MAP_W, MAP_H, T } from "./tiles";
 import { SPELLS, SPELL_ORDER } from "./spells";
 import { BIOMES, biomeForDepth } from "./biomes";
@@ -39,6 +40,11 @@ export class CoopRenderer {
   }
 
   start() {
+    loadTileAtlas()
+      .then(() => { this.dirty = true; })
+      .catch((e) => {
+        console.warn("[Dungeon of Echoes] Tile atlas failed to load — using procedural tiles.", e);
+      });
     this.running = true;
     window.addEventListener("keydown", this.handleKey);
     this.resize();
@@ -171,7 +177,26 @@ export class CoopRenderer {
         const key = x + "," + y;
         if (!this.explored.has(key)) continue;
         const t = this._tileAt(x, y);
-        drawTile(ctx, t, x * s - cameraX, y * s - cameraY, s, (x * 13 + y * 7) | 0);
+        const px = x * s - cameraX;
+        const py = y * s - cameraY;
+        const v = (x * 13 + y * 7) | 0;
+        const biome = this.map?.biome || "stone";
+        const synthMat = (tx, ty) => ((tx * 48271 + ty * 65521 + v) >>> 0) % 8;
+        if (t === T.FLOOR && atlasReady()) {
+          const ok = drawAutotileFloor(
+            ctx,
+            px,
+            py,
+            s,
+            x,
+            y,
+            biome,
+            (tx, ty) => this._tileAt(tx, ty),
+            synthMat,
+          );
+          if (ok) continue;
+        }
+        drawTile(ctx, t, px, py, s, v, biome, null, x, y);
       }
     }
     for (let y = startY; y < endY; y++) {

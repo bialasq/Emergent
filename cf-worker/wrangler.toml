@@ -8,7 +8,15 @@ binding = "DB"
 database_name = "dungeon_of_echoes"
 database_id = "2234eb19-06bf-4eb2-b242-6fcacf7d99eb"
 
+[[durable_objects.bindings]]
+name = "COOP_ROOM"
+class_name = "CoopRoomDO"
+
+[[migrations]]
+tag = "coop-room-v1"
+new_sqlite_classes = ["CoopRoomDO"]
+
 [vars]
-# Comma-separated allowed origins for CORS (Pages URL + your custom domain later)
-ALLOWED_ORIGINS = "https://dungeon-of-echoes-9a2.pages.dev"
+# Comma-separated allowed origins for CORS + WebSocket Origin checks (Pages + custom domain)
+ALLOWED_ORIGINS = "https://dungeon-of-echoes-9a2.pages.dev,http://localhost:3000"
 

@@ -1,0 +1,2 @@
+# Copy to .dev.vars for `npm run dev` (wrangler never commits .dev.vars)
+JWT_SECRET=replace-with-long-random-string-for-local-dev

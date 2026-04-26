@@ -80,9 +80,9 @@ See /app/memory/test_credentials.md (no seed user; register fresh accounts).
   - Authenticated → MongoDB `users.souls` + `users.meta`; atomic compare-and-swap on /api/meta/spend
   - Guests → `localStorage` (`dungeon_echoes_meta`)
   - Sanctum panel on `/play` with 8 upgrades (HP/MP/ATK/DEF/Potions + 3 spell unlocks)
-- **Multiplayer co-op via WebSocket** at `/api/ws/coop/{room_code}`:
-  - 2–4 player rooms, deterministic seed via crc32(code), parallel descent (own enemies, shared seed)
-  - Other players appear as spectral echoes on canvas + minimap when in FOV
+- **Multiplayer co-op via WebSocket** at `/api/ws/coop/{room_code}` (**server-authoritative**):
+  - FastAPI holds `GameRoom` state; clients send actions (`move`, `wait`, `spell`, `use_potion`, `use_mana`), server broadcasts `map` + per-player `state` (FOV-masked)
+  - 2–4 players per room; room seed deterministic from `crc32(room_code)`; protocol documented in `frontend/src/services/coop.js`
   - Page: `/coop` (Create / Join with random code generator)
 - **Map 5× per dimension** → 300×180 tiles. Switched from offscreen pre-render to on-the-fly viewport tile rendering (~425 draws/frame) to keep memory bounded.
 - **Auto-descend on stairs** — stepping on STAIRS_DOWN immediately advances the floor
@@ -103,6 +103,6 @@ See /app/memory/test_credentials.md (no seed user; register fresh accounts).
 - `souls_earned = floor(score/100) + kills + (50 if victory else 0)`
 
 ### Backlog (next priorities)
-- P1: Authoritative server combat for true shared-enemy multiplayer
-- P2: Audio (SFX + ambient music), Daily Challenge (fixed seed leaderboard)
+- P1: Harden authoritative coop (reconnect, room TTL/persistence, edge cases); Cloudflare Worker path has **no WS** — document hybrid deploy (`REACT_APP_BACKEND_URL` for coop only) or add separate WS service
+- P2: Audio (SFX + ambient music); surface **Daily Challenge** in UI (`GET /api/daily` exists on Worker; align FastAPI if needed)
 - P2: Touch controls, Rogue + Ranger classes, animated sprites

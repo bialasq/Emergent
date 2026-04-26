@@ -15,6 +15,7 @@ import {
   resolveAttack, XP_PER_LEVEL, rollUpgrades,
 } from "./entities";
 import { drawTile, drawPlayer, drawEnemy, drawItem, drawGhostPlayer } from "./sprites";
+import { loadTileAtlas, atlasReady, drawAutotileFloor } from "./tileAtlas";
 import { SPELLS, SPELL_ORDER, applyMetaToStats, soulsFromRun } from "./spells";
 import { BIOMES, biomeForDepth } from "./biomes";
 import {
@@ -113,6 +114,8 @@ export class Game {
     this.log = [];
     this.explored = new Set();
     this.visible = new Set();
+    /** Positions of open doors: "x,y" for cells where map is T.DOOR */
+    this.openDoors = new Set();
 
     this.running = false;
     this.paused = false;
@@ -127,6 +130,11 @@ export class Game {
   }
 
   start() {
+    loadTileAtlas()
+      .then(() => { this.dirty = true; })
+      .catch((e) => {
+        console.warn("[Dungeon of Echoes] Tile atlas failed to load — using procedural tiles.", e);
+      });
     this.enterFloor(1);
     this.running = true;
     window.addEventListener("keydown", this.handleKey);
@@ -330,6 +338,13 @@ export class Game {
     this.materials = gen.materials || null;
     this.zones = gen.zones || null;
 
+    this.openDoors = new Set();
+    for (let yy = 0; yy < MAP_H; yy++) {
+      for (let xx = 0; xx < MAP_W; xx++) {
+        if (map[yy][xx] === T.DOOR) this.openDoors.add(xx + "," + yy);
+      }
+    }
+
     this.player.x = start.x; this.player.y = start.y;
     this.player.rx = start.x; this.player.ry = start.y;
 
@@ -438,8 +453,12 @@ export class Game {
   }
 
   updateFOV() {
-    this.visible = computeFOV(this.map, this.player.x, this.player.y, this.fovRadius);
+    this.visible = computeFOV(this.map, this.player.x, this.player.y, this.fovRadius, this.openDoors);
     for (const k of this.visible) this.explored.add(k);
+  }
+
+  cellWalkable(x, y) {
+    return isWalkable(this.map, x, y, this.openDoors);
   }
 
   logMsg(msg, kind = "info") {
@@ -497,6 +516,36 @@ export class Game {
     e.preventDefault();
   }
 
+  tryToggleDoorAt(tx, ty) {
+    if (ty < 0 || tx < 0 || ty >= MAP_H || tx >= MAP_W) return false;
+    if (this.map[ty][tx] !== T.DOOR) return false;
+    const d = Math.abs(tx - this.player.x) + Math.abs(ty - this.player.y);
+    if (d > 1) {
+      this.logMsg("You can't reach the latch.", "bump");
+      return true;
+    }
+    const key = tx + "," + ty;
+    if (this.openDoors.has(key)) {
+      if (this.player.x === tx && this.player.y === ty) {
+        this.logMsg("You're in the doorway.", "bump");
+        return true;
+      }
+      if (this.enemies.some(e => e.hp > 0 && e.x === tx && e.y === ty)) {
+        this.logMsg("Something blocks the latch.", "bump");
+        return true;
+      }
+      this.openDoors.delete(key);
+      this.logMsg("You heave the door shut.", "info");
+    } else {
+      this.openDoors.add(key);
+      this.logMsg("The door groans open.", "info");
+    }
+    this.updateFOV();
+    this.dirty = true;
+    this.pushState();
+    return true;
+  }
+
   handleMouseDown(e) {
     if (!this.running || this.paused || this.awaitingLevelUp) return;
     // right click only
@@ -507,6 +556,7 @@ export class Game {
     const sy = e.clientY - rect.top;
     const tx = Math.floor((sx + this.cameraX) / this.tileSize);
     const ty = Math.floor((sy + this.cameraY) / this.tileSize);
+    if (this.tryToggleDoorAt(tx, ty)) return;
     this.attackEnemyAt(tx, ty);
   }
 
@@ -604,7 +654,7 @@ export class Game {
           const pts = this.bresenhamLine(this.player.x, this.player.y, tgt.x, tgt.y).slice(1, 9);
           let hit = 0;
           for (const [x, y] of pts) {
-            if (!isWalkable(this.map, x, y)) break;
+            if (!this.cellWalkable(x, y)) break;
             const enemy = this.enemies.find(en => en.x === x && en.y === y && en.hp > 0);
             if (enemy) {
               const dmg = Math.max(2, baseDmg - (enemy.def || 0));
@@ -737,7 +787,7 @@ export class Game {
       const line = this.bresenhamLine(this.player.x, this.player.y, tx, ty).slice(1);
       for (const [x, y] of line) {
         if (x === tx && y === ty) break;
-        if (!isWalkable(this.map, x, y)) { this.logMsg("No clear shot.", "bump"); return; }
+        if (!this.cellWalkable(x, y)) { this.logMsg("No clear shot.", "bump"); return; }
       }
       const bonus = this.player.dmgBonus + (this.player.atk - CLASSES[this.classKey].stats.atk);
       const result = resolveAttack(this.floorRng, { dmg: this.player.dmgDice, bonus, crit: this.player.crit }, enemy);
@@ -756,7 +806,7 @@ export class Game {
       const line = this.bresenhamLine(this.player.x, this.player.y, tx, ty).slice(1);
       for (const [x, y] of line) {
         if (x === tx && y === ty) break;
-        if (!isWalkable(this.map, x, y)) { this.logMsg("The stone drinks the flame.", "bump"); return; }
+        if (!this.cellWalkable(x, y)) { this.logMsg("The stone drinks the flame.", "bump"); return; }
       }
       const bonus = this.player.dmgBonus + 1;
       const result = resolveAttack(this.floorRng, { dmg: this.player.dmgDice, bonus, crit: this.player.crit }, enemy);
@@ -844,7 +894,7 @@ export class Game {
       for (let r = 1; r <= this.player.range; r++) {
         const tx = this.player.x + dx * r;
         const ty = this.player.y + dy * r;
-        if (!isWalkable(this.map, tx, ty)) break;
+        if (!this.cellWalkable(tx, ty)) break;
         const tgt = this.enemies.find(e => e.x === tx && e.y === ty && e.hp > 0);
         if (tgt) {
           const result = resolveAttack(this.floorRng, {
@@ -859,7 +909,7 @@ export class Game {
         }
       }
     }
-    if (isWalkable(this.map, nx, ny)) {
+    if (this.cellWalkable(nx, ny)) {
       this.player.x = nx; this.player.y = ny;
     } else {
       this.logMsg(`The stone blocks your path.`, "bump");
@@ -960,7 +1010,7 @@ export class Game {
         for (const [mx, my] of tryMoves) {
           const nx = e.x + mx, ny = e.y + my;
           if (nx === this.player.x && ny === this.player.y) continue;
-          if (!isWalkable(this.map, nx, ny)) continue;
+          if (!this.cellWalkable(nx, ny)) continue;
           if (this.enemies.some(en => en !== e && en.hp > 0 && en.x === nx && en.y === ny)) continue;
           e.x = nx; e.y = ny;
           break;
@@ -1084,16 +1134,32 @@ export class Game {
         const exp = this.explored.has(key);
         if (!exp) continue;
         const mat = this.materials ? this.materials[y]?.[x] : null;
-        drawTile(
-          ctx,
-          this.map[y][x],
-          x * s - this.cameraX,
-          y * s - this.cameraY,
-          s,
-          (x * 13 + y * 7) | 0,
-          biomeKey,
-          mat,
-        );
+        const t = this.map[y][x];
+        const doorOpen = t === T.DOOR && this.openDoors.has(key);
+        const px = x * s - this.cameraX;
+        const py = y * s - this.cameraY;
+        const v = (x * 13 + y * 7) | 0;
+        const tileForNeighbor = (tx, ty) => {
+          const c = this.map[ty][tx];
+          if (c === T.DOOR && this.openDoors.has(tx + "," + ty)) return T.FLOOR;
+          return c;
+        };
+        const drawAsFloor = (t === T.FLOOR || doorOpen) && atlasReady();
+        if (drawAsFloor) {
+          const ok = drawAutotileFloor(
+            ctx,
+            px,
+            py,
+            s,
+            x,
+            y,
+            biomeKey,
+            tileForNeighbor,
+            (tx, ty) => this.materials?.[ty]?.[tx] ?? 0,
+          );
+          if (ok) continue;
+        }
+        drawTile(ctx, doorOpen ? T.FLOOR : t, px, py, s, v, biomeKey, mat, x, y);
       }
     }
 

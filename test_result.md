@@ -101,3 +101,62 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Align docs and Cloudflare API with architecture review (coop WS vs Worker, README, PRD)."
+
+backend:
+  - task: "FastAPI coop WebSocket + meta endpoints"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Unchanged; PRD updated to describe server-authoritative coop per coop.js."
+
+frontend:
+  - task: "Coop client protocol"
+    implemented: true
+    working: true
+    file: "frontend/src/services/coop.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Requires REACT_APP_BACKEND_URL or dev :8000; not available on Worker-only deploy."
+
+cf-worker:
+  - task: "POST /api/meta/award parity"
+    implemented: true
+    working: "NA"
+    file: "cf-worker/src/index.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Added endpoint mirroring FastAPI; verify with wrangler dev + bearer token."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Manual: POST /api/meta/award on Worker with amount query"
+    - "Regression: backend pytest"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Docs + PRD + Worker award route updated; README_CLOUDFLARE documents WS gap."
