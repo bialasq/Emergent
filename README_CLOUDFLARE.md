@@ -65,7 +65,7 @@
 
    | Nazwa | Wartość (aktualny Worker) |
    |--------|---------------------------|
-   | `REACT_APP_BACKEND_URL` | `https://dungeon-of-echoes-api.dungeoneofechoes.workers.dev` |
+   | `REACT_APP_BACKEND_URL` | `https://dungeon-of-echoes-api.dungeonofechoes.workers.dev` |
 
    Bez tego kolejny automatyczny build z Git-a wstawi pusty URL i front nie trafi w API. Deploy z CLI z lokalnym `$env:REACT_APP_BACKEND_URL=...` działa tylko dla tej jednej kompilacji.
 
