@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CLASSES } from "../game/entities";
 import { newSeed } from "../game/rng";
@@ -18,12 +18,16 @@ const ART = {
 
 export default function CharacterSelect() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, refresh } = useAuth();
   const isAuthed = user && user.username;
   const defaultName = isAuthed ? user.username : "Wanderer";
 
   const [selected, setSelected] = useState("warrior");
   const [name, setName] = useState(defaultName);
+  const [welcome, setWelcome] = useState(
+    () => (location.state?.justRegistered ? `Konto gotowe — witaj, ${location.state?.username || "wędrowcze"}.` : null),
+  );
   const [seedInput, setSeedInput] = useState("");
   const [souls, setSouls] = useState(0);
   const [meta, setMeta] = useState({});
@@ -49,6 +53,18 @@ export default function CharacterSelect() {
   }, [isAuthed, user]);
 
   useEffect(() => { loadMeta(); }, [loadMeta]);
+
+  useEffect(() => {
+    if (isAuthed && user?.username) {
+      setName((prev) => (prev === "Wanderer" || !prev ? user.username : prev));
+    }
+  }, [isAuthed, user?.username]);
+
+  useEffect(() => {
+    if (!welcome) return;
+    const t = setTimeout(() => setWelcome(null), 8000);
+    return () => clearTimeout(t);
+  }, [welcome]);
 
   const spend = async (upg) => {
     setError(null);
@@ -94,6 +110,14 @@ export default function CharacterSelect() {
         <Link to="/" className="inline-flex items-center gap-2 font-sub text-sm text-dungeon-muted hover:text-dungeon-parchment" data-testid="char-back-btn">
           <ChevronLeft className="w-4 h-4" /> Return to the Gate
         </Link>
+        {welcome && (
+          <div
+            className="mt-4 p-3 border border-dungeon-teal/40 bg-dungeon-teal/10 text-dungeon-parchment text-sm font-body rounded"
+            data-testid="register-welcome-banner"
+          >
+            {welcome}
+          </div>
+        )}
         <div className="mt-6 mb-10 flex items-end justify-between flex-wrap gap-4">
           <div>
             <h1 className="torch-title font-heading text-5xl">Choose Your Calling</h1>

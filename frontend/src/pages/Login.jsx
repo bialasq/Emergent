@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth } from "../contexts/AuthContext";
@@ -6,25 +6,38 @@ import { formatApiError } from "../services/api";
 import { Flame } from "lucide-react";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, isAuthed, loading } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (loading) return;
+    if (isAuthed) navigate("/play", { replace: true });
+  }, [loading, isAuthed, navigate]);
+
   const onSubmit = async (e) => {
     e.preventDefault();
     setError(null); setBusy(true);
     try {
       await login(email, password);
-      navigate("/");
+      navigate("/play", { replace: true });
     } catch (err) {
       setError(formatApiError(err));
     } finally {
       setBusy(false);
     }
   };
+
+  if (loading || isAuthed) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6" data-testid="login-loading">
+        <p className="font-body text-dungeon-muted">Otwieranie bramy…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 py-10" data-testid="login-page">

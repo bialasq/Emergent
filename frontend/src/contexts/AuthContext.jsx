@@ -23,7 +23,8 @@ export function AuthProvider({ children }) {
   }, [refresh]);
 
   const login = async (email, password) => {
-    const { data } = await api.post("/auth/login", { email, password });
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    const { data } = await api.post("/auth/login", { email: cleanEmail, password });
     if (data?.access_token) setAccessToken(data.access_token);
     const me = await api.get("/auth/me");
     setUser(me.data);
@@ -31,7 +32,13 @@ export function AuthProvider({ children }) {
   };
 
   const register = async (email, password, username) => {
-    const { data } = await api.post("/auth/register", { email, password, username });
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    const cleanName = String(username || "").trim();
+    const { data } = await api.post("/auth/register", {
+      email: cleanEmail,
+      password,
+      username: cleanName,
+    });
     if (data?.access_token) setAccessToken(data.access_token);
     const me = await api.get("/auth/me");
     setUser(me.data);
@@ -43,8 +50,12 @@ export function AuthProvider({ children }) {
     setUser(false);
   };
 
+  const isAuthed = !!(user && typeof user === "object" && user.id);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh, formatApiError }}>
+    <AuthContext.Provider
+      value={{ user, loading, isAuthed, login, register, logout, refresh, formatApiError }}
+    >
       {children}
     </AuthContext.Provider>
   );
