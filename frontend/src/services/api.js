@@ -1,13 +1,9 @@
 import axios from "axios";
+import { getBackendBaseUrl } from "../lib/backendBaseUrl";
 
 const ACCESS_TOKEN_KEY = "doe_access_token";
 
-const raw = process.env.REACT_APP_BACKEND_URL;
-const devFallback =
-  process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "";
-const BACKEND = String(raw || devFallback || "")
-  .trim()
-  .replace(/\/$/, "");
+const BACKEND = getBackendBaseUrl();
 export const API_BASE = BACKEND ? `${BACKEND}/api` : "/api";
 
 export const api = axios.create({

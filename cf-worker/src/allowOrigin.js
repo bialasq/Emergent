@@ -24,6 +24,10 @@ export function resolveAllowOrigin(origin, allowed) {
       /* ignore */
     }
   }
+  // Emergent / publiczne preview (gra bez własnego API na tym hoście)
+  if (reqHost.endsWith(".pr-t.com") || reqHost.endsWith(".emergentagent.com")) {
+    return origin;
+  }
   return allowed[0] || "";
 }
 

@@ -1,3 +1,5 @@
+import { getBackendBaseUrl } from "../lib/backendBaseUrl";
+
 // Server-authoritative coop WS client.
 // Protocol (in):
 //   {type:"joined", you, room, seed, players}
@@ -18,13 +20,10 @@ export class CoopClient {
     this.id = null;
   }
   connect() {
-    const raw = process.env.REACT_APP_BACKEND_URL;
-    const devFallback =
-      process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "";
-    const baseUrl = String(raw || devFallback || "").trim();
+    const baseUrl = getBackendBaseUrl();
     if (!baseUrl) {
       this.handlers.onError &&
-        this.handlers.onError("Set REACT_APP_BACKEND_URL (or run dev with backend on :8000)");
+        this.handlers.onError("Brak adresu API — ustaw REACT_APP_BACKEND_URL lub otwórz grę z dozwolonej domeny.");
       return;
     }
     const base = baseUrl.replace(/^http/, "ws");
